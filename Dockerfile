@@ -9,4 +9,4 @@ COPY . .
 
 ENV PYTHONPATH=/app
 
-CMD alembic upgrade head && echo "=== MIGRACION OK ===" && uvicorn app.main:app --host 0.0.0.0 --port $PORT --log-level debug
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --log-level debug"]
