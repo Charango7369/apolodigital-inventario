@@ -10,4 +10,5 @@ COPY . .
 ENV PYTHONPATH=/app
 
 # Diagnóstico: salta alembic temporalmente
+
 CMD ["sh", "-c", "echo PORT=$PORT && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level debug"]
