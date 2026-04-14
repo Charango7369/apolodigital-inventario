@@ -8,6 +8,7 @@ from app.database import Base
 # Importa los modelos para que Alembic los detecte en autogenerate.
 # Agrega una línea por cada módulo nuevo que crees.
 import app.modules.inventario.models as _inv_models  # noqa: F401
+import app.modules.auth.models as _auth_models  # noqa: F401
 
 config = context.config
 settings = get_settings()
