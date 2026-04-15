@@ -7,6 +7,7 @@ from app.database import check_db_connection
 
 # Importar modelos ANTES de crear la instancia para que SQLAlchemy los registre
 import app.modules.inventario.models  # noqa: F401
+import app.modules.ventas.models  # noqa: F401  # <-- NUEVO
 
 settings = get_settings()
 
@@ -42,8 +43,11 @@ application.add_middleware(
 # Routers
 from app.modules.auth.router import router as auth_router
 from app.modules.inventario.router import router as inventario_router  # <-- NUEVO
+from app.modules.ventas.router import router as ventas_router
+
 application.include_router(auth_router, prefix="/api/v1", tags=["auth"])
 application.include_router(inventario_router, prefix="/api/v1", tags=["inventario"])  # <-- NUEVO
+application.include_router(ventas_router, prefix="/api/v1", tags=["ventas"])
 
 @application.get("/", tags=["root"])
 def root():
