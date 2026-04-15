@@ -41,8 +41,9 @@ application.add_middleware(
 
 # Routers
 from app.modules.auth.router import router as auth_router
+from app.modules.inventario.router import router as inventario_router  # <-- NUEVO
 application.include_router(auth_router, prefix="/api/v1", tags=["auth"])
-
+application.include_router(inventario_router, prefix="/api/v1", tags=["inventario"])  # <-- NUEVO
 
 @application.get("/", tags=["root"])
 def root():
