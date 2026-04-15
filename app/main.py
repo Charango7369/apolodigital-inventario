@@ -58,7 +58,7 @@ app.add_middleware(
 # from app.modules.auth.router import router as auth_router
 # app.include_router(inventario_router, prefix="/api/v1", tags=["inventario"])
 # app.include_router(auth_router,       prefix="/api/v1", tags=["auth"])
-
+import app.modules.inventario.models  # noqa: F401
 # Descomenta/agrega esto:
 from app.modules.auth.router import router as auth_router
 app.include_router(auth_router, prefix="/api/v1", tags=["auth"])
