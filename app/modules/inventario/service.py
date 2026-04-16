@@ -164,7 +164,7 @@ def get_productos(
     page: int = 1,
     per_page: int = 50
 ) -> tuple[list[Producto], int]:
-    query = db.query(Producto).filter(Producto.negocio_id == negocio_id)
+    query = db.query(Producto).options(joinedload(Producto.variantes)).filter(Producto.negocio_id == negocio_id)
     
     if solo_activos:
         query = query.filter(Producto.activo == True)
