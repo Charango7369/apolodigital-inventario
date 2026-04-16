@@ -15,19 +15,33 @@ from app.modules.auth.models import User
 from app.modules.inventario import service
 from app.modules.inventario.schemas import (
     # Categoría
-    CategoriaCreate, CategoriaUpdate, CategoriaResponse,
+    CategoriaCreate,
+    CategoriaUpdate,
+    CategoriaResponse,
     # Proveedor
-    ProveedorCreate, ProveedorUpdate, ProveedorResponse,
+    ProveedorCreate,
+    ProveedorUpdate,
+    ProveedorResponse,
     # Almacén
-    AlmacenCreate, AlmacenUpdate, AlmacenResponse,
+    AlmacenCreate,
+    AlmacenUpdate,
+    AlmacenResponse,
     # Producto
-    ProductoCreate, ProductoUpdate, ProductoResponse, ProductoListResponse,
+    ProductoCreate,
+    ProductoUpdate,
+    ProductoResponse,
+    ProductoListResponse,
     # Variante
-    VarianteCreate, VarianteUpdate, VarianteResponse,
+    VarianteCreate,
+    VarianteUpdate,
+    VarianteResponse,
     # Stock
-    StockResponse, StockConDetalleResponse, StockUpdate,
+    StockResponse,
+    StockConDetalleResponse,
+    StockUpdate,
     # Movimiento
-    MovimientoCreate, MovimientoResponse,
+    MovimientoCreate,
+    MovimientoResponse,
 )
 
 router = APIRouter()
@@ -40,7 +54,7 @@ router = APIRouter()
 def listar_categorias(
     solo_activas: bool = True,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Lista todas las categorías del negocio"""
     return service.get_categorias(db, user.negocio_id, solo_activas)
@@ -50,7 +64,7 @@ def listar_categorias(
 def crear_categoria(
     data: CategoriaCreate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Crea una nueva categoría"""
     return service.create_categoria(db, user.negocio_id, data)
@@ -60,7 +74,7 @@ def crear_categoria(
 def obtener_categoria(
     categoria_id: str,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Obtiene una categoría por ID"""
     categoria = service.get_categoria(db, user.negocio_id, categoria_id)
@@ -74,7 +88,7 @@ def actualizar_categoria(
     categoria_id: str,
     data: CategoriaUpdate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Actualiza una categoría"""
     categoria = service.get_categoria(db, user.negocio_id, categoria_id)
@@ -87,7 +101,7 @@ def actualizar_categoria(
 def eliminar_categoria(
     categoria_id: str,
     user: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Elimina una categoría (solo admin)"""
     categoria = service.get_categoria(db, user.negocio_id, categoria_id)
@@ -103,7 +117,7 @@ def eliminar_categoria(
 def listar_proveedores(
     solo_activos: bool = True,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Lista todos los proveedores del negocio"""
     return service.get_proveedores(db, user.negocio_id, solo_activos)
@@ -113,7 +127,7 @@ def listar_proveedores(
 def crear_proveedor(
     data: ProveedorCreate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Crea un nuevo proveedor"""
     return service.create_proveedor(db, user.negocio_id, data)
@@ -123,7 +137,7 @@ def crear_proveedor(
 def obtener_proveedor(
     proveedor_id: str,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Obtiene un proveedor por ID"""
     proveedor = service.get_proveedor(db, user.negocio_id, proveedor_id)
@@ -137,7 +151,7 @@ def actualizar_proveedor(
     proveedor_id: str,
     data: ProveedorUpdate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Actualiza un proveedor"""
     proveedor = service.get_proveedor(db, user.negocio_id, proveedor_id)
@@ -150,7 +164,7 @@ def actualizar_proveedor(
 def eliminar_proveedor(
     proveedor_id: str,
     user: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Elimina un proveedor (solo admin)"""
     proveedor = service.get_proveedor(db, user.negocio_id, proveedor_id)
@@ -164,8 +178,7 @@ def eliminar_proveedor(
 # ===========================================================================
 @router.get("/almacenes", response_model=list[AlmacenResponse])
 def listar_almacenes(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Lista todos los almacenes del negocio"""
     return service.get_almacenes(db, user.negocio_id)
@@ -175,7 +188,7 @@ def listar_almacenes(
 def crear_almacen(
     data: AlmacenCreate,
     user: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Crea un nuevo almacén (solo admin)"""
     return service.create_almacen(db, user.negocio_id, data)
@@ -185,7 +198,7 @@ def crear_almacen(
 def obtener_almacen(
     almacen_id: str,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Obtiene un almacén por ID"""
     almacen = service.get_almacen(db, user.negocio_id, almacen_id)
@@ -199,7 +212,7 @@ def actualizar_almacen(
     almacen_id: str,
     data: AlmacenUpdate,
     user: User = Depends(get_current_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Actualiza un almacén (solo admin)"""
     almacen = service.get_almacen(db, user.negocio_id, almacen_id)
@@ -215,17 +228,19 @@ def actualizar_almacen(
 def listar_productos(
     solo_activos: bool = True,
     categoria_id: str | None = None,
-    busqueda: str | None = Query(None, min_length=1, description="Buscar por nombre o código"),
+    busqueda: str | None = Query(
+        None, min_length=1, description="Buscar por nombre o código"
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Lista productos con paginación y filtros"""
     productos, total = service.get_productos(
         db, user.negocio_id, solo_activos, categoria_id, busqueda, page, per_page
     )
-    
+
     # Convertir a respuesta con precio
     items = []
     for p in productos:
@@ -234,24 +249,36 @@ def listar_productos(
             activas = [v for v in p.variantes if v.activa]
             if activas:
                 precio = activas[0].precio_venta
-        items.append({
-            "id": p.id,
-            "nombre": p.nombre,
-            "categoria_id": p.categoria_id,
-            "codigo_barras": p.codigo_barras,
-            "unidad_medida": p.unidad_medida,
-            "tiene_variantes": p.tiene_variantes,
-            "es_servicio": p.es_servicio,
-            "activo": p.activo,
-            "precio_venta": precio,
-        })
-    
+            items.append(
+                {
+                    "id": p.id,
+                    "nombre": p.nombre,
+                    "categoria_id": p.categoria_id,
+                    "codigo_barras": p.codigo_barras,
+                    "unidad_medida": p.unidad_medida,
+                    "tiene_variantes": p.tiene_variantes,
+                    "es_servicio": p.es_servicio,
+                    "activo": p.activo,
+                    "precio_venta": precio,
+                    "variantes": [
+                        {
+                            "id": v.id,
+                            "sku": v.sku,
+                            "precio_venta": v.precio_venta,
+                            "activa": v.activa,
+                        }
+                        for v in p.variantes
+                        if v.activa
+                    ],
+                }
+            )
+
     return {
         "items": items,
         "total": total,
         "page": page,
         "per_page": per_page,
-        "pages": (total + per_page - 1) // per_page
+        "pages": (total + per_page - 1) // per_page,
     }
 
 
@@ -259,14 +286,14 @@ def listar_productos(
 def crear_producto(
     data: ProductoCreate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Crea un nuevo producto con su variante por defecto"""
     # Validar que tenga precio si no tiene variantes
     if not data.tiene_variantes and data.precio_venta is None:
         raise HTTPException(
             status_code=400,
-            detail="Debe especificar precio_venta para productos sin variantes"
+            detail="Debe especificar precio_venta para productos sin variantes",
         )
     return service.create_producto(db, user.negocio_id, data)
 
@@ -275,7 +302,7 @@ def crear_producto(
 def obtener_producto(
     producto_id: str,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Obtiene un producto con sus variantes"""
     producto = service.get_producto(db, user.negocio_id, producto_id)
@@ -288,7 +315,7 @@ def obtener_producto(
 def buscar_por_codigo(
     codigo_barras: str,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Busca un producto por código de barras"""
     producto = service.get_producto_by_codigo(db, user.negocio_id, codigo_barras)
@@ -302,7 +329,7 @@ def actualizar_producto(
     producto_id: str,
     data: ProductoUpdate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Actualiza un producto"""
     producto = service.get_producto(db, user.negocio_id, producto_id)
@@ -315,7 +342,7 @@ def actualizar_producto(
 def eliminar_producto(
     producto_id: str,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Desactiva un producto (soft delete)"""
     producto = service.get_producto(db, user.negocio_id, producto_id)
@@ -327,12 +354,16 @@ def eliminar_producto(
 # ===========================================================================
 # VARIANTES
 # ===========================================================================
-@router.post("/productos/{producto_id}/variantes", response_model=VarianteResponse, status_code=201)
+@router.post(
+    "/productos/{producto_id}/variantes",
+    response_model=VarianteResponse,
+    status_code=201,
+)
 def crear_variante(
     producto_id: str,
     data: VarianteCreate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Crea una variante para un producto"""
     producto = service.get_producto(db, user.negocio_id, producto_id)
@@ -341,7 +372,7 @@ def crear_variante(
     if not producto.tiene_variantes:
         raise HTTPException(
             status_code=400,
-            detail="El producto no admite variantes. Edite el producto para habilitar variantes."
+            detail="El producto no admite variantes. Edite el producto para habilitar variantes.",
         )
     return service.create_variante(db, producto, data)
 
@@ -351,7 +382,7 @@ def actualizar_variante(
     variante_id: str,
     data: VarianteUpdate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Actualiza una variante"""
     variante = service.get_variante(db, user.negocio_id, variante_id)
@@ -365,8 +396,7 @@ def actualizar_variante(
 # ===========================================================================
 @router.get("/stock/alertas", response_model=list[StockConDetalleResponse])
 def obtener_alertas_stock(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Lista productos con stock bajo el mínimo"""
     return service.get_alertas_stock(db, user.negocio_id)
@@ -377,7 +407,7 @@ def obtener_stock_variante(
     variante_id: str,
     almacen_id: str | None = None,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Obtiene el stock de una variante en todos los almacenes o uno específico"""
     # Validar que la variante pertenece al negocio
@@ -392,7 +422,7 @@ def configurar_stock(
     stock_id: str,
     data: StockUpdate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Configura mínimos y máximos de stock"""
     # TODO: Validar que el stock pertenece al negocio
@@ -409,17 +439,17 @@ def configurar_stock(
 def registrar_movimiento(
     data: MovimientoCreate,
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Registra un movimiento de stock.
-    
+
     Tipos de entrada (aumentan stock):
     - ENTRADA_COMPRA: mercancía del proveedor
     - AJUSTE_POSITIVO: corrección manual al alza
     - TRANSFERENCIA_ENTRADA: desde otro almacén
     - DEVOLUCION_CLIENTE: cliente devolvió producto
-    
+
     Tipos de salida (reducen stock):
     - SALIDA_VENTA: se vendió
     - AJUSTE_NEGATIVO: corrección manual a la baja
@@ -440,7 +470,7 @@ def listar_movimientos(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Lista movimientos de stock con filtros"""
     movimientos, total = service.get_movimientos(
@@ -451,5 +481,5 @@ def listar_movimientos(
         "total": total,
         "page": page,
         "per_page": per_page,
-        "pages": (total + per_page - 1) // per_page
+        "pages": (total + per_page - 1) // per_page,
     }
