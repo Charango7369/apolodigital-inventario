@@ -249,7 +249,40 @@ def get_variante(db: Session, negocio_id: str, variante_id: str) -> Variante | N
 
 
 def create_variante(db: Session, producto: Producto, data: VarianteCreate) -> Variante:
+    
+    def _validar_barcode_unico(db, negocio_id: str, codigo: str, variante_id: str = None):
+        """
+        Valida que el código de barras no esté usado por otra variante del mismo negocio.
+        Si variante_id se pasa, excluye esa variante del chequeo (usado en updates).
+        """
+        if not codigo:
+            return  # sin código, nada que validar
+
+        from app.modules.inventario.models import Variante, Producto
+
+        q = (
+            db.query(Variante)
+            .join(Producto)
+            .filter(
+                Producto.negocio_id == negocio_id,
+                Variante.codigo_barras == codigo,
+            )
+        )
+
+        if variante_id:
+            q = q.filter(Variante.id != variante_id)
+
+        existente = q.first()
+        if existente:
+            raise ValueError(
+                f"El código de barras '{codigo}' ya está asignado a otro producto"
+            )
+
+    # 🔍 Llamada correcta
+    _validar_barcode_unico(db, producto.negocio_id, data.codigo_barras)
+
     variante = Variante(producto_id=producto.id, **data.model_dump())
+    
     db.add(variante)
     db.commit()
     db.refresh(variante)
@@ -257,8 +290,47 @@ def create_variante(db: Session, producto: Producto, data: VarianteCreate) -> Va
 
 
 def update_variante(db: Session, variante: Variante, data: VarianteUpdate) -> Variante:
-    for key, value in data.model_dump(exclude_unset=True).items():
-        setattr(variante, key, value)
+
+    def _validar_barcode_unico(db, negocio_id: str, codigo: str, variante_id: str = None):
+        """
+        Valida que el código de barras no esté usado por otra variante del mismo negocio.
+        Si variante_id se pasa, excluye esa variante del chequeo (usado en updates).
+        """
+        if not codigo:
+            return  # sin código, nada que validar
+
+        from app.modules.inventario.models import Variante, Producto
+
+        q = (
+            db.query(Variante)
+            .join(Producto)
+            .filter(
+                Producto.negocio_id == negocio_id,
+                Variante.codigo_barras == codigo,
+            )
+        )
+
+        if variante_id:
+            q = q.filter(Variante.id != variante_id)
+
+        existente = q.first()
+        if existente:
+            raise ValueError(
+                f"El código de barras '{codigo}' ya está asignado a otro producto"
+            )
+
+    # 🔍 Llamada correcta a la validación
+    _validar_barcode_unico(
+        db=db,
+        negocio_id=variante.producto.negocio_id,
+        codigo=data.codigo_barras,
+        variante_id=variante.id
+    )
+
+    # 🔧 Aplicar cambios
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(variante, field, value)
+
     db.commit()
     db.refresh(variante)
     return variante
@@ -421,3 +493,28 @@ def get_movimientos(
     ).offset((page - 1) * per_page).limit(per_page).all()
     
     return movimientos, total
+
+def get_variante_por_barcode(
+    db: Session,
+    negocio_id: str,
+    codigo: str,
+):
+    """
+    Busca una variante activa por su código de barras,
+    filtrando por el negocio del usuario (multi-tenancy).
+    """
+    from sqlalchemy.orm import joinedload
+    from app.modules.inventario.models import Variante, Producto
+
+    return (
+        db.query(Variante)
+        .join(Producto, Variante.producto_id == Producto.id)
+        .options(joinedload(Variante.producto))
+        .filter(
+            Producto.negocio_id == negocio_id,
+            Variante.codigo_barras == codigo,
+            Variante.activa == True,
+        )
+        .first()
+    )
+

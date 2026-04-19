@@ -90,6 +90,7 @@ class AlmacenResponse(BaseModel):
 # ---------------------------------------------------------------------------
 class VarianteCreate(BaseModel):
     sku: str | None = Field(None, max_length=100)
+    codigo_barras: str | None = Field(None, max_length=50)
     atributos: dict | None = Field(default_factory=dict)
     precio_venta: Decimal = Field(..., ge=0, decimal_places=2)
     precio_costo: Decimal | None = Field(None, ge=0, decimal_places=2)
@@ -98,6 +99,7 @@ class VarianteCreate(BaseModel):
 
 class VarianteUpdate(BaseModel):
     sku: str | None = None
+    codigo_barras: str | None = None
     atributos: dict | None = None
     precio_venta: Decimal | None = Field(None, ge=0)
     precio_costo: Decimal | None = Field(None, ge=0)
@@ -111,6 +113,7 @@ class VarianteResponse(BaseModel):
     id: str
     producto_id: str
     sku: str | None
+    codigo_barras: str | None
     atributos: dict | None
     precio_venta: Decimal
     precio_costo: Decimal | None

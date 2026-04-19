@@ -374,7 +374,12 @@ def crear_variante(
             status_code=400,
             detail="El producto no admite variantes. Edite el producto para habilitar variantes.",
         )
-    return service.create_variante(db, producto, data)
+
+    try:
+        return service.create_variante(db, producto, data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 
 @router.put("/variantes/{variante_id}", response_model=VarianteResponse)
@@ -389,6 +394,37 @@ def actualizar_variante(
     if not variante:
         raise HTTPException(status_code=404, detail="Variante no encontrada")
     return service.update_variante(db, variante, data)
+
+@router.get("/variantes/barcode/{codigo}")
+def buscar_variante_por_barcode(
+    codigo: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Busca una variante por su código de barras.
+
+    Usado desde el POS para agregar al carrito escaneando.
+    Devuelve la variante con su producto anidado.
+
+    Retorna 404 si no se encuentra en el negocio del usuario.
+    """
+    variante = service.get_variante_por_barcode(db, user.negocio_id, codigo)
+    if not variante:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Código '{codigo}' no registrado",
+        )
+    return {
+        "id": variante.id,
+        "producto_id": variante.producto_id,
+        "producto_nombre": variante.producto.nombre,
+        "sku": variante.sku,
+        "codigo_barras": variante.codigo_barras,
+        "precio_venta": variante.precio_venta,
+        "atributos": variante.atributos,
+        "activa": variante.activa,
+    }
 
 
 # ===========================================================================
