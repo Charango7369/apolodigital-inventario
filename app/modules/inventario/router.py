@@ -264,7 +264,9 @@ def listar_productos(
                         {
                             "id": v.id,
                             "sku": v.sku,
+                            "codigo_barras": v.codigo_barras,
                             "precio_venta": v.precio_venta,
+                            "precio_costo": v.precio_costo,
                             "activa": v.activa,
                         }
                         for v in p.variantes
