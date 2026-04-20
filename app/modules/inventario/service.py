@@ -225,12 +225,37 @@ def create_producto(db: Session, negocio_id: str, data: ProductoCreate) -> Produ
 
 
 def update_producto(db: Session, producto: Producto, data: ProductoUpdate) -> Producto:
-    for key, value in data.model_dump(exclude_unset=True).items():
+    """
+    Actualiza un producto. Si tiene_variantes=False, propaga precio_venta y
+    precio_costo a la variante default (variantes[0]).
+
+    Razón: ProductoUpdate ahora acepta precio_venta y precio_costo como
+    atajo para productos simples, pero estos campos NO existen en el modelo
+    Producto — viven en Variante. Se separan y se aplican al lugar correcto.
+    """
+    update_data = data.model_dump(exclude_unset=True)
+
+    # Separar campos de variante (solo aplican si no tiene variantes múltiples)
+    precio_venta = update_data.pop("precio_venta", None)
+    precio_costo = update_data.pop("precio_costo", None)
+
+    # Actualizar los campos propios del Producto
+    for key, value in update_data.items():
         setattr(producto, key, value)
+
+    # Propagar precios a la variante default si aplica
+    if not producto.tiene_variantes and (precio_venta is not None or precio_costo is not None):
+        # Asume que el producto simple tiene exactamente 1 variante (la default)
+        variante = producto.variantes[0] if producto.variantes else None
+        if variante is not None:
+            if precio_venta is not None:
+                variante.precio_venta = precio_venta
+            if precio_costo is not None:
+                variante.precio_costo = precio_costo
+
     db.commit()
     db.refresh(producto)
     return producto
-
 
 def delete_producto(db: Session, producto: Producto) -> None:
     # Soft delete

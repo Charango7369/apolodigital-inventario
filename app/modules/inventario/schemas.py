@@ -146,6 +146,9 @@ class ProductoUpdate(BaseModel):
     codigo_barras: str | None = None
     unidad_medida: str | None = None
     activo: bool | None = None
+    # Se propagan a la variante default si tiene_variantes=False
+    precio_venta: Decimal | None = Field(None, ge=0)
+    precio_costo: Decimal | None = Field(None, ge=0)
 
 
 class ProductoResponse(BaseModel):
