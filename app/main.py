@@ -44,10 +44,12 @@ application.add_middleware(
 from app.modules.auth.router import router as auth_router
 from app.modules.inventario.router import router as inventario_router  # <-- NUEVO
 from app.modules.ventas.router import router as ventas_router
+from app.modules.admin.router import router as admin_router
 
 application.include_router(auth_router, prefix="/api/v1", tags=["auth"])
 application.include_router(inventario_router, prefix="/api/v1", tags=["inventario"])  # <-- NUEVO
 application.include_router(ventas_router, prefix="/api/v1", tags=["ventas"])
+application.include_router(admin_router, prefix="/api/v1", tags=["admin"])
 
 @application.get("/", tags=["root"])
 def root():

@@ -24,6 +24,7 @@ def new_uuid() -> str:
 
 class UserRole(str, Enum):
     """Roles disponibles en el sistema."""
+    SUPERADMIN = "superadmin"  # dueño de la plataforma ApoloDigital
     ADMIN = "admin"
     EMPLEADO = "empleado"
 

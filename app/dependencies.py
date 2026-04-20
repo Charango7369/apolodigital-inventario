@@ -68,17 +68,32 @@ def get_current_user(
 
 def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
     """
-    Igual que get_current_user pero solo permite admins.
+    Permite ADMIN y SUPERADMIN.
     
     Levanta 403 si el usuario no es admin.
+    SUPERADMIN hereda todos los privilegios de admin.
     """
-    if current_user.rol != UserRole.ADMIN.value:
+
+    if current_user.rol not in (UserRole.ADMIN.value, UserRole.SUPERADMIN.value):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Se requiere rol de administrador",
         )
     return current_user
 
+def get_current_superadmin(current_user: User = Depends(get_current_user)) -> User:
+    """
+    Solo permite SUPERADMIN.
+
+    Levanta 403 si el usuario no es superadmin de la plataforma.
+    Usado por el panel de gestión de negocios (multi-tenant).
+    """
+    if current_user.rol != UserRole.SUPERADMIN.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Se requiere rol de superadministrador de plataforma",
+        )
+    return current_user
 
 def get_negocio_id(current_user: User = Depends(get_current_user)) -> str:
     """
