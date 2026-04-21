@@ -4,7 +4,7 @@ from sqlalchemy import func
 
 from app.modules.auth.models import User, UserRole
 from app.modules.auth.service import hash_password
-from app.modules.inventario.models import Negocio, Producto
+from app.modules.inventario.models import Negocio, Producto, Almacen
 
 from .schemas import NegocioCreate, NegocioUpdate
 
@@ -84,6 +84,14 @@ def create_negocio_con_admin(db: Session, data: NegocioCreate) -> dict:
         rol=UserRole.ADMIN.value,
     )
     db.add(admin)
+
+    # Crear almacén Principal automáticamente para que el POS funcione de inmediato
+    almacen = Almacen(
+        negocio_id=negocio.id,
+        nombre="Principal",
+        es_principal=True,
+    )
+    db.add(almacen)
 
     db.commit()
     db.refresh(negocio)
