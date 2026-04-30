@@ -32,3 +32,13 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Scripts locales con credenciales sensibles (no subir)
+scripts/
+
+# Backups, archivos temporales y desarrollo
+*.bak
+CACHEDIR.TAG
+v/
+README.md
+migrate.sh
