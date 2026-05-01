@@ -2,8 +2,10 @@
 Router FastAPI — módulo inventario
 
 Endpoints para gestión de productos, categorías, proveedores,
-almacenes, stock y movimientos.
+almacenes, stock, lotes y movimientos.
 """
+
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -42,6 +44,13 @@ from app.modules.inventario.schemas import (
     # Movimiento
     MovimientoCreate,
     MovimientoResponse,
+    # Lote (NUEVO)
+    LoteCreate,
+    LoteUpdate,
+    LoteResponse,
+    LoteProximoVencerResponse,
+    DarBajaLoteRequest,
+    BusquedaAtributosRequest,
 )
 
 router = APIRouter()
@@ -76,7 +85,6 @@ def obtener_categoria(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Obtiene una categoría por ID"""
     categoria = service.get_categoria(db, user.negocio_id, categoria_id)
     if not categoria:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
@@ -90,7 +98,6 @@ def actualizar_categoria(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Actualiza una categoría"""
     categoria = service.get_categoria(db, user.negocio_id, categoria_id)
     if not categoria:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
@@ -103,7 +110,6 @@ def eliminar_categoria(
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Elimina una categoría (solo admin)"""
     categoria = service.get_categoria(db, user.negocio_id, categoria_id)
     if not categoria:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
@@ -119,7 +125,6 @@ def listar_proveedores(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Lista todos los proveedores del negocio"""
     return service.get_proveedores(db, user.negocio_id, solo_activos)
 
 
@@ -129,7 +134,6 @@ def crear_proveedor(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Crea un nuevo proveedor"""
     return service.create_proveedor(db, user.negocio_id, data)
 
 
@@ -139,7 +143,6 @@ def obtener_proveedor(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Obtiene un proveedor por ID"""
     proveedor = service.get_proveedor(db, user.negocio_id, proveedor_id)
     if not proveedor:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
@@ -153,7 +156,6 @@ def actualizar_proveedor(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Actualiza un proveedor"""
     proveedor = service.get_proveedor(db, user.negocio_id, proveedor_id)
     if not proveedor:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
@@ -166,7 +168,6 @@ def eliminar_proveedor(
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Elimina un proveedor (solo admin)"""
     proveedor = service.get_proveedor(db, user.negocio_id, proveedor_id)
     if not proveedor:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado")
@@ -180,7 +181,6 @@ def eliminar_proveedor(
 def listar_almacenes(
     user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    """Lista todos los almacenes del negocio"""
     return service.get_almacenes(db, user.negocio_id)
 
 
@@ -190,7 +190,6 @@ def crear_almacen(
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Crea un nuevo almacén (solo admin)"""
     return service.create_almacen(db, user.negocio_id, data)
 
 
@@ -200,7 +199,6 @@ def obtener_almacen(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Obtiene un almacén por ID"""
     almacen = service.get_almacen(db, user.negocio_id, almacen_id)
     if not almacen:
         raise HTTPException(status_code=404, detail="Almacén no encontrado")
@@ -214,7 +212,6 @@ def actualizar_almacen(
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """Actualiza un almacén (solo admin)"""
     almacen = service.get_almacen(db, user.negocio_id, almacen_id)
     if not almacen:
         raise HTTPException(status_code=404, detail="Almacén no encontrado")
@@ -241,7 +238,6 @@ def listar_productos(
         db, user.negocio_id, solo_activos, categoria_id, busqueda, page, per_page
     )
 
-    # Convertir a respuesta con precio
     items = []
     for p in productos:
         precio = None
@@ -258,6 +254,7 @@ def listar_productos(
                     "unidad_medida": p.unidad_medida,
                     "tiene_variantes": p.tiene_variantes,
                     "es_servicio": p.es_servicio,
+                    "controla_vencimiento": p.controla_vencimiento,
                     "activo": p.activo,
                     "precio_venta": precio,
                     "variantes": [
@@ -265,6 +262,7 @@ def listar_productos(
                             "id": v.id,
                             "sku": v.sku,
                             "codigo_barras": v.codigo_barras,
+                            "atributos": v.atributos,
                             "precio_venta": v.precio_venta,
                             "precio_costo": v.precio_costo,
                             "activa": v.activa,
@@ -291,7 +289,6 @@ def crear_producto(
     db: Session = Depends(get_db),
 ):
     """Crea un nuevo producto con su variante por defecto"""
-    # Validar que tenga precio si no tiene variantes
     if not data.tiene_variantes and data.precio_venta is None:
         raise HTTPException(
             status_code=400,
@@ -306,7 +303,6 @@ def obtener_producto(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Obtiene un producto con sus variantes"""
     producto = service.get_producto(db, user.negocio_id, producto_id)
     if not producto:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
@@ -319,7 +315,6 @@ def buscar_por_codigo(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Busca un producto por código de barras"""
     producto = service.get_producto_by_codigo(db, user.negocio_id, codigo_barras)
     if not producto:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
@@ -333,7 +328,6 @@ def actualizar_producto(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Actualiza un producto"""
     producto = service.get_producto(db, user.negocio_id, producto_id)
     if not producto:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
@@ -367,7 +361,6 @@ def crear_variante(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Crea una variante para un producto"""
     producto = service.get_producto(db, user.negocio_id, producto_id)
     if not producto:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
@@ -383,7 +376,6 @@ def crear_variante(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-
 @router.put("/variantes/{variante_id}", response_model=VarianteResponse)
 def actualizar_variante(
     variante_id: str,
@@ -391,11 +383,14 @@ def actualizar_variante(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Actualiza una variante"""
     variante = service.get_variante(db, user.negocio_id, variante_id)
     if not variante:
         raise HTTPException(status_code=404, detail="Variante no encontrada")
-    return service.update_variante(db, variante, data)
+    try:
+        return service.update_variante(db, variante, data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.get("/variantes/barcode/{codigo}")
 def buscar_variante_por_barcode(
@@ -403,14 +398,7 @@ def buscar_variante_por_barcode(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Busca una variante por su código de barras.
-
-    Usado desde el POS para agregar al carrito escaneando.
-    Devuelve la variante con su producto anidado.
-
-    Retorna 404 si no se encuentra en el negocio del usuario.
-    """
+    """Busca una variante por su código de barras (para POS)."""
     variante = service.get_variante_por_barcode(db, user.negocio_id, codigo)
     if not variante:
         raise HTTPException(
@@ -429,6 +417,131 @@ def buscar_variante_por_barcode(
     }
 
 
+@router.post("/variantes/buscar-por-atributo", response_model=list[VarianteResponse])
+def buscar_variantes_por_atributo(
+    data: BusquedaAtributosRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Busca variantes que contengan TODOS los atributos pasados.
+    Body: {"atributos": {"talla": "M", "color": "rojo"}}
+    """
+    return service.buscar_variantes_por_atributo(db, user.negocio_id, data.atributos)
+
+
+# ===========================================================================
+# LOTES (NUEVO)
+# ===========================================================================
+@router.get("/lotes", response_model=list[LoteResponse])
+def listar_lotes(
+    variante_id: str | None = Query(None),
+    almacen_id: str | None = Query(None),
+    solo_activos: bool = True,
+    solo_con_stock: bool = False,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Lista lotes con filtros."""
+    return service.get_lotes(
+        db, user.negocio_id,
+        variante_id=variante_id, almacen_id=almacen_id,
+        solo_activos=solo_activos, solo_con_stock=solo_con_stock,
+    )
+
+
+@router.get("/lotes/proximos-vencer", response_model=list[LoteProximoVencerResponse])
+def lotes_proximos_vencer(
+    dias: int = Query(30, ge=0, le=365),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Lotes con stock que vencen en los próximos N días (incluye ya vencidos)."""
+    lotes = service.get_lotes_proximos_vencer(db, user.negocio_id, dias)
+    hoy = date.today()
+    return [
+        LoteProximoVencerResponse(
+            id=l.id,
+            variante_id=l.variante_id,
+            almacen_id=l.almacen_id,
+            codigo_lote=l.codigo_lote,
+            fecha_vencimiento=l.fecha_vencimiento,
+            cantidad_actual=l.cantidad_actual,
+            producto_nombre=l.variante.producto.nombre,
+            variante_sku=l.variante.sku,
+            almacen_nombre=l.almacen.nombre,
+            dias_para_vencer=(l.fecha_vencimiento - hoy).days if l.fecha_vencimiento else 9999,
+        )
+        for l in lotes
+    ]
+
+
+@router.get("/lotes/{lote_id}", response_model=LoteResponse)
+def obtener_lote(
+    lote_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lote = service.get_lote(db, user.negocio_id, lote_id)
+    if not lote:
+        raise HTTPException(status_code=404, detail="Lote no encontrado")
+    return lote
+
+
+@router.post("/lotes", response_model=LoteResponse, status_code=201)
+def crear_lote(
+    data: LoteCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Crea un lote nuevo. Genera automáticamente un movimiento ENTRADA_COMPRA
+    y sincroniza el stock agregado.
+    """
+    try:
+        return service.crear_lote(db, user.negocio_id, data, usuario_id=user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/lotes/{lote_id}", response_model=LoteResponse)
+def editar_lote(
+    lote_id: str,
+    data: LoteUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Edita campos descriptivos del lote (no cantidades)."""
+    lote = service.get_lote(db, user.negocio_id, lote_id)
+    if not lote:
+        raise HTTPException(status_code=404, detail="Lote no encontrado")
+    return service.update_lote(db, lote, data)
+
+
+@router.post(
+    "/lotes/{lote_id}/dar-baja-vencido",
+    response_model=MovimientoResponse,
+    status_code=201,
+)
+def dar_baja_lote(
+    lote_id: str,
+    data: DarBajaLoteRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Da de baja todo el stock remanente del lote (típicamente vencido).
+    Crea un MovimientoStock tipo MERMA_VENCIMIENTO.
+    """
+    try:
+        return service.dar_baja_lote_vencido(
+            db, user.negocio_id, lote_id,
+            motivo=data.motivo, usuario_id=user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ===========================================================================
 # STOCK
 # ===========================================================================
@@ -436,7 +549,6 @@ def buscar_variante_por_barcode(
 def obtener_alertas_stock(
     user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    """Lista productos con stock bajo el mínimo"""
     return service.get_alertas_stock(db, user.negocio_id)
 
 
@@ -447,8 +559,6 @@ def obtener_stock_variante(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Obtiene el stock de una variante en todos los almacenes o uno específico"""
-    # Validar que la variante pertenece al negocio
     variante = service.get_variante(db, user.negocio_id, variante_id)
     if not variante:
         raise HTTPException(status_code=404, detail="Variante no encontrada")
@@ -463,7 +573,6 @@ def configurar_stock(
     db: Session = Depends(get_db),
 ):
     """Configura mínimos y máximos de stock"""
-    # TODO: Validar que el stock pertenece al negocio
     stock = db.query(service.Stock).filter(service.Stock.id == stock_id).first()
     if not stock:
         raise HTTPException(status_code=404, detail="Stock no encontrado")
@@ -473,26 +582,23 @@ def configurar_stock(
 # ===========================================================================
 # MOVIMIENTOS
 # ===========================================================================
-@router.post("/movimientos", response_model=MovimientoResponse, status_code=201)
+@router.post(
+    "/movimientos",
+    response_model=list[MovimientoResponse],  # ← ahora devuelve LISTA (FEFO)
+    status_code=201,
+)
 def registrar_movimiento(
     data: MovimientoCreate,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Registra un movimiento de stock.
+    Registra uno o más movimientos de stock.
 
-    Tipos de entrada (aumentan stock):
-    - ENTRADA_COMPRA: mercancía del proveedor
-    - AJUSTE_POSITIVO: corrección manual al alza
-    - TRANSFERENCIA_ENTRADA: desde otro almacén
-    - DEVOLUCION_CLIENTE: cliente devolvió producto
-
-    Tipos de salida (reducen stock):
-    - SALIDA_VENTA: se vendió
-    - AJUSTE_NEGATIVO: corrección manual a la baja
-    - TRANSFERENCIA_SALIDA: hacia otro almacén
-    - DEVOLUCION_PROVEEDOR: se devolvió al proveedor
+    Para SALIDAS sin lote_id: aplica FEFO automático (puede generar N movimientos).
+    Para SALIDAS con lote_id: descuento manual de un lote específico.
+    Para ENTRADAS: requiere lote_id (suma a un lote existente).
+    Para crear un lote nuevo, usar POST /lotes en su lugar.
     """
     try:
         return service.crear_movimiento(db, user.negocio_id, data, user.id)
@@ -505,14 +611,22 @@ def listar_movimientos(
     variante_id: str | None = None,
     almacen_id: str | None = None,
     tipo: str | None = None,
+    lote_id: str | None = None,  # NUEVO filtro
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=100),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Lista movimientos de stock con filtros"""
+    # Llamada con kwargs para evitar el desfase con el nuevo lote_id en la firma
     movimientos, total = service.get_movimientos(
-        db, user.negocio_id, variante_id, almacen_id, tipo, page, per_page
+        db, user.negocio_id,
+        variante_id=variante_id,
+        almacen_id=almacen_id,
+        tipo=tipo,
+        lote_id=lote_id,
+        page=page,
+        per_page=per_page,
     )
     return {
         "items": [MovimientoResponse.model_validate(m) for m in movimientos],

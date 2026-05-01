@@ -1,7 +1,10 @@
 """
 Service layer — módulo ventas
 
-Lógica de negocio para clientes, ventas y reportes.
+Cambios v2 (lotes):
+- _completar_venta: el descuento usa FEFO automático (sin cambios desde el caller).
+- cancelar_venta: ahora REVIERTE cada SALIDA_VENTA al lote original,
+  preservando integridad de costeo. Antes hacía un AJUSTE_POSITIVO genérico.
 """
 
 from datetime import datetime, date
@@ -15,8 +18,12 @@ from app.modules.ventas.schemas import (
     VentaCreate, VentaUpdate, VentaCompletarRequest,
     DetalleVentaCreate,
 )
-from app.modules.inventario.models import Variante, Producto, Stock, Almacen
-from app.modules.inventario.service import get_almacen_principal, get_or_create_stock, crear_movimiento
+from app.modules.inventario.models import (
+    Variante, Producto, Stock, Almacen, MovimientoStock,
+)
+from app.modules.inventario.service import (
+    get_almacen_principal, get_or_create_stock, crear_movimiento,
+)
 from app.modules.inventario.schemas import MovimientoCreate
 
 
@@ -24,8 +31,8 @@ from app.modules.inventario.schemas import MovimientoCreate
 # Clientes
 # ---------------------------------------------------------------------------
 def get_clientes(
-    db: Session, 
-    negocio_id: str, 
+    db: Session,
+    negocio_id: str,
     solo_activos: bool = True,
     busqueda: str | None = None
 ) -> list[Cliente]:
@@ -73,7 +80,7 @@ def update_cliente(db: Session, cliente: Cliente, data: ClienteUpdate) -> Client
 
 
 # ---------------------------------------------------------------------------
-# Número de venta (autoincremental por negocio)
+# Número de venta
 # ---------------------------------------------------------------------------
 def get_siguiente_numero_venta(db: Session, negocio_id: str) -> int:
     result = db.query(func.max(Venta.numero)).filter(
@@ -96,7 +103,7 @@ def get_ventas(
     per_page: int = 50
 ) -> tuple[list[Venta], int]:
     query = db.query(Venta).filter(Venta.negocio_id == negocio_id)
-    
+
     if estado:
         query = query.filter(Venta.estado == estado)
     if fecha_desde:
@@ -105,12 +112,12 @@ def get_ventas(
         query = query.filter(Venta.created_at <= datetime.combine(fecha_hasta, datetime.max.time()))
     if cliente_id:
         query = query.filter(Venta.cliente_id == cliente_id)
-    
+
     total = query.count()
     ventas = query.options(
         joinedload(Venta.detalles)
     ).order_by(Venta.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
-    
+
     return ventas, total
 
 
@@ -139,11 +146,7 @@ def crear_venta(
     data: VentaCreate,
     usuario_id: str
 ) -> Venta:
-    """
-    Crea una venta con todos sus detalles.
-    Si completar=True, descuenta stock inmediatamente.
-    """
-    # Determinar almacén
+    """Crea una venta con todos sus detalles."""
     if data.almacen_id:
         almacen = db.query(Almacen).filter(
             Almacen.id == data.almacen_id,
@@ -155,8 +158,7 @@ def crear_venta(
         almacen = get_almacen_principal(db, negocio_id)
         if not almacen:
             raise ValueError("No hay almacén principal configurado")
-    
-    # Crear cabecera de venta
+
     numero = get_siguiente_numero_venta(db, negocio_id)
     venta = Venta(
         negocio_id=negocio_id,
@@ -171,27 +173,23 @@ def crear_venta(
         estado=EstadoVenta.PENDIENTE.value
     )
     db.add(venta)
-    db.flush()  # Obtener ID
-    
-    # Procesar líneas de detalle
+    db.flush()
+
     subtotal = Decimal("0")
     for linea in data.detalles:
         detalle = _crear_detalle(db, negocio_id, venta.id, linea)
         subtotal += detalle.subtotal
-    
-    # Calcular totales
+
     venta.subtotal = subtotal
     venta.descuento = data.descuento
     venta.total = subtotal - data.descuento
-    
-    # Calcular cambio si es efectivo
+
     if data.monto_recibido and data.monto_recibido >= venta.total:
         venta.cambio = data.monto_recibido - venta.total
-    
-    # Completar si se solicita
+
     if data.completar:
         _completar_venta(db, negocio_id, venta, usuario_id)
-    
+
     db.commit()
     db.refresh(venta)
     return venta
@@ -204,21 +202,19 @@ def _crear_detalle(
     data: DetalleVentaCreate
 ) -> DetalleVenta:
     """Crea una línea de detalle de venta"""
-    # Obtener variante con producto
     variante = db.query(Variante).join(Producto).filter(
         Variante.id == data.variante_id,
         Producto.negocio_id == negocio_id,
         Variante.activa == True,
         Producto.activo == True
     ).first()
-    
+
     if not variante:
         raise ValueError(f"Variante {data.variante_id} no encontrada o inactiva")
-    
-    # Usar precio enviado o precio de variante
+
     precio = data.precio_unitario if data.precio_unitario else variante.precio_venta
     subtotal = (precio * data.cantidad) - data.descuento_linea
-    
+
     detalle = DetalleVenta(
         venta_id=venta_id,
         variante_id=variante.id,
@@ -236,41 +232,51 @@ def _crear_detalle(
 
 
 def _completar_venta(db: Session, negocio_id: str, venta: Venta, usuario_id: str) -> None:
-    """Completa una venta: cambia estado y descuenta stock"""
+    """
+    Completa una venta: cambia estado y descuenta stock con FEFO automático.
+
+    El descuento usa el service de inventario que aplica FEFO sobre los lotes.
+    Una sola línea de venta puede generar N movimientos si el FEFO reparte
+    entre varios lotes.
+    """
     if venta.estado != EstadoVenta.PENDIENTE.value:
-        raise ValueError(f"Solo se pueden completar ventas pendientes. Estado actual: {venta.estado}")
-    
-    # Descontar stock de cada línea
+        raise ValueError(
+            f"Solo se pueden completar ventas pendientes. Estado actual: {venta.estado}"
+        )
+
     for detalle in venta.detalles:
-        # Verificar stock disponible
-        stock = get_or_create_stock(db, detalle.variante_id, venta.almacen_id)
-        
-        # Verificar si el producto es servicio (no descuenta stock)
+        # Resolver variante para chequeo de servicios
         variante = db.query(Variante).options(
             joinedload(Variante.producto)
         ).filter(Variante.id == detalle.variante_id).first()
-        
+
         if variante and variante.producto.es_servicio:
             continue  # Servicios no descuentan stock
-        
+
+        # Pre-chequeo rápido contra el caché Stock (mensaje claro al usuario).
+        # La validación real (lote por lote) la hace crear_movimiento.
+        stock = get_or_create_stock(db, detalle.variante_id, venta.almacen_id)
         if stock.cantidad_actual < detalle.cantidad:
             raise ValueError(
                 f"Stock insuficiente para {detalle.producto_nombre}. "
                 f"Disponible: {stock.cantidad_actual}, Solicitado: {detalle.cantidad}"
             )
-        
-        # Crear movimiento de salida
+
         mov_data = MovimientoCreate(
             variante_id=detalle.variante_id,
             almacen_id=venta.almacen_id,
             tipo="SALIDA_VENTA",
             cantidad=detalle.cantidad,
             referencia_id=str(venta.numero),
-            motivo=f"Venta #{venta.numero}"
+            motivo=f"Venta #{venta.numero}",
+            # lote_id=None → FEFO automático
         )
+        # crear_movimiento ahora retorna list[MovimientoStock] (FEFO puede
+        # generar múltiples). No necesitamos capturar el resultado para el
+        # flujo normal: la trazabilidad queda en movimientos_stock por
+        # referencia_id = venta.numero.
         crear_movimiento(db, negocio_id, mov_data, usuario_id)
-    
-    # Actualizar estado
+
     venta.estado = EstadoVenta.COMPLETADA.value
     venta.completed_at = datetime.utcnow()
 
@@ -289,7 +295,7 @@ def completar_venta(
         venta.monto_recibido = data.monto_recibido
         if data.monto_recibido >= venta.total:
             venta.cambio = data.monto_recibido - venta.total
-    
+
     _completar_venta(db, negocio_id, venta, usuario_id)
     db.commit()
     db.refresh(venta)
@@ -305,37 +311,61 @@ def cancelar_venta(
 ) -> Venta:
     """
     Cancela una venta.
-    Si estaba completada, devuelve el stock.
+
+    Si la venta estaba COMPLETADA, devuelve cada salida al lote original.
+    Esto preserva la integridad del costeo (cada unidad vuelve a su lote).
+
+    Las ventas que se completaron antes de la migración a lotes pueden tener
+    movimientos sin lote_id. En ese caso, raise para forzar reversión manual
+    (caso poco común; típicamente requeriría un AJUSTE_POSITIVO con
+    creación de un lote nuevo).
     """
     if venta.estado == EstadoVenta.CANCELADA.value:
         raise ValueError("La venta ya está cancelada")
-    
-    # Si estaba completada, devolver stock
+
     if venta.estado == EstadoVenta.COMPLETADA.value:
-        for detalle in venta.detalles:
-            variante = db.query(Variante).options(
-                joinedload(Variante.producto)
-            ).filter(Variante.id == detalle.variante_id).first()
-            
-            if variante and variante.producto.es_servicio:
-                continue
-            
-            # Crear movimiento de devolución
+        # Buscar TODAS las salidas originales de esta venta.
+        # Una sola venta puede haber generado N movimientos por FEFO.
+        movs_originales = db.query(MovimientoStock).filter(
+            MovimientoStock.referencia_id == str(venta.numero),
+            MovimientoStock.tipo == "SALIDA_VENTA",
+            MovimientoStock.almacen_id == venta.almacen_id,
+        ).all()
+
+        if not movs_originales:
+            # Venta de servicios puros, o venta sin descuento de stock previo.
+            # No hay nada que devolver.
+            pass
+
+        for mov in movs_originales:
+            if not mov.lote_id:
+                raise ValueError(
+                    f"El movimiento {mov.id} no tiene lote asociado (legacy "
+                    f"pre-migración). La cancelación requiere reversión manual: "
+                    f"crear un AJUSTE_POSITIVO con un lote nuevo de igual cantidad."
+                )
+
+            cantidad_devolver = -mov.cantidad  # mov.cantidad es negativa
+
             mov_data = MovimientoCreate(
-                variante_id=detalle.variante_id,
-                almacen_id=venta.almacen_id,
-                tipo="AJUSTE_POSITIVO",
-                cantidad=detalle.cantidad,
+                variante_id=mov.variante_id,
+                almacen_id=mov.almacen_id,
+                tipo="DEVOLUCION_CLIENTE",
+                cantidad=cantidad_devolver,
+                lote_id=mov.lote_id,  # ← devolver al lote ORIGINAL
                 referencia_id=str(venta.numero),
-                motivo=f"Cancelación venta #{venta.numero}" + (f": {motivo}" if motivo else "")
+                motivo=(
+                    f"Cancelación venta #{venta.numero}"
+                    + (f": {motivo}" if motivo else "")
+                ),
             )
             crear_movimiento(db, negocio_id, mov_data, usuario_id)
-    
+
     venta.estado = EstadoVenta.CANCELADA.value
     venta.cancelled_at = datetime.utcnow()
     if motivo:
         venta.notas = (venta.notas or "") + f"\n[CANCELADA] {motivo}"
-    
+
     db.commit()
     db.refresh(venta)
     return venta
@@ -345,27 +375,25 @@ def cancelar_venta(
 # Reportes
 # ---------------------------------------------------------------------------
 def get_resumen_ventas_dia(db: Session, negocio_id: str, fecha: date) -> dict:
-    """Resumen de ventas de un día específico"""
     inicio = datetime.combine(fecha, datetime.min.time())
     fin = datetime.combine(fecha, datetime.max.time())
-    
+
     ventas = db.query(Venta).filter(
         Venta.negocio_id == negocio_id,
         Venta.estado == EstadoVenta.COMPLETADA.value,
         Venta.created_at >= inicio,
         Venta.created_at <= fin
     ).all()
-    
+
     total_ventas = len(ventas)
     monto_total = sum(v.total for v in ventas)
     ticket_promedio = monto_total / total_ventas if total_ventas > 0 else Decimal("0")
-    
-    # Por método de pago
+
     por_metodo = {}
     for v in ventas:
         metodo = v.metodo_pago
         por_metodo[metodo] = por_metodo.get(metodo, Decimal("0")) + v.total
-    
+
     return {
         "fecha": fecha.isoformat(),
         "total_ventas": total_ventas,
@@ -376,19 +404,18 @@ def get_resumen_ventas_dia(db: Session, negocio_id: str, fecha: date) -> dict:
 
 
 def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
-    """Resumen de caja del día"""
     inicio = datetime.combine(fecha, datetime.min.time())
     fin = datetime.combine(fecha, datetime.max.time())
-    
+
     ventas = db.query(Venta).filter(
         Venta.negocio_id == negocio_id,
         Venta.created_at >= inicio,
         Venta.created_at <= fin
     ).all()
-    
+
     completadas = [v for v in ventas if v.estado == EstadoVenta.COMPLETADA.value]
     canceladas = [v for v in ventas if v.estado == EstadoVenta.CANCELADA.value]
-    
+
     totales = {
         MetodoPago.EFECTIVO.value: Decimal("0"),
         MetodoPago.QR.value: Decimal("0"),
@@ -396,11 +423,11 @@ def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
         MetodoPago.TRANSFERENCIA.value: Decimal("0"),
         MetodoPago.CREDITO.value: Decimal("0"),
     }
-    
+
     for v in completadas:
         if v.metodo_pago in totales:
             totales[v.metodo_pago] += v.total
-    
+
     return {
         "fecha": fecha.isoformat(),
         "ventas_completadas": len(completadas),
