@@ -353,6 +353,7 @@ def cancelar_venta(
                 tipo="DEVOLUCION_CLIENTE",
                 cantidad=cantidad_devolver,
                 lote_id=mov.lote_id,  # ← devolver al lote ORIGINAL
+                costo_unitario=mov.costo_unitario,  # ← preservar costo historico inmutable
                 referencia_id=str(venta.numero),
                 motivo=(
                     f"Cancelación venta #{venta.numero}"

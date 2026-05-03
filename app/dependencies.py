@@ -16,7 +16,7 @@ from app.modules.auth.models import User, UserRole
 from app.modules.auth.service import decode_access_token, get_user_by_id
 
 # OAuth2 scheme — indica que el token viene en header Authorization: Bearer <token>
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
 def get_current_user(
