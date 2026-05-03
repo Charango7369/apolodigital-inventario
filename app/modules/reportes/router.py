@@ -96,3 +96,86 @@ def utilidad_legacy_estimada(
             detail="Venta no encontrada o no pertenece al negocio",
         )
     return resultado
+
+
+# ===========================================================================
+# A.2 — Endpoints agregados
+# ===========================================================================
+from datetime import date
+
+from app.modules.reportes.schemas import (
+    UtilidadPeriodoResponse,
+    UtilidadPorProductoResponse,
+)
+
+
+@router.get(
+    "/utilidad-periodo",
+    response_model=UtilidadPeriodoResponse,
+)
+def utilidad_periodo(
+    desde: date,
+    hasta: date,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Utilidad agregada del periodo con breakdown temporal automatico.
+
+    Reglas:
+    - Solo ventas COMPLETADA filtradas por completed_at en el rango.
+    - Excluye ventas legacy (lote_id NULL o costo_unitario NULL en cualquier salida).
+      Las cuenta en bloque informativo aparte.
+    - Bloque informativo de canceladas (filtradas por cancelled_at).
+    - Granularidad automatica: dia si rango <= 90 dias, mes si > 90.
+    - Rango maximo: 365 dias.
+
+    Casos borde:
+    - Periodo sin ventas: revenue=0, profit=0, por_periodo=[]
+    - Todas las ventas son legacy: revenue=0 calculado, info en bloque legacy
+    """
+    try:
+        return service.calcular_utilidad_periodo(
+            db, user.negocio_id, desde, hasta,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/utilidad-por-producto",
+    response_model=UtilidadPorProductoResponse,
+)
+def utilidad_por_producto(
+    desde: date,
+    hasta: date,
+    orden: str = "profit",
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Utilidad agregada POR PRODUCTO en el periodo.
+
+    Identifica los productos que mas dejan en absoluto (por defecto)
+    o los de mayor margen porcentual (orden=margin) para Pareto de
+    rentabilidad.
+
+    Mismas reglas que utilidad-periodo:
+    - Solo COMPLETADA, completed_at en rango.
+    - Excluye legacy.
+    - Rango max 365 dias.
+
+    Parametro orden: profit | margin | revenue (default: profit DESC)
+    """
+    try:
+        return service.calcular_utilidad_por_producto(
+            db, user.negocio_id, desde, hasta, orden,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )

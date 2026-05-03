@@ -409,3 +409,456 @@ def calcular_utilidad_legacy_estimada(
             "del lote consumido. Para utilidad real ver /reportes/utilidad-venta/{id}."
         ),
     }
+
+
+# ===========================================================================
+# A.2 — Reportes agregados (utilidad-periodo y utilidad-por-producto)
+# ===========================================================================
+
+from datetime import date, datetime, timedelta
+
+from sqlalchemy import text
+
+
+# ---------------------------------------------------------------------------
+# Constantes y validaciones
+# ---------------------------------------------------------------------------
+RANGO_MAXIMO_DIAS = 365
+UMBRAL_GRANULARIDAD_DIA = 90  # > este valor, agrupamos por mes
+
+
+def _validar_rango(desde: date, hasta: date) -> None:
+    """Lanza ValueError si el rango es inválido."""
+    if desde > hasta:
+        raise ValueError("desde debe ser <= hasta")
+    dias = (hasta - desde).days
+    if dias > RANGO_MAXIMO_DIAS:
+        raise ValueError(
+            f"Rango maximo {RANGO_MAXIMO_DIAS} dias. Pediste {dias} dias. "
+            f"Para analisis multi-anual hay que usar otro endpoint (futuro)."
+        )
+
+
+def _granularidad_para(desde: date, hasta: date) -> str:
+    """Devuelve 'dia' si rango <= 90, 'mes' si > 90."""
+    return "dia" if (hasta - desde).days <= UMBRAL_GRANULARIDAD_DIA else "mes"
+
+
+# ---------------------------------------------------------------------------
+# Identificar ventas legacy en bloque (vs llamar al endpoint individual)
+# ---------------------------------------------------------------------------
+def _ids_ventas_legacy(
+    db: Session, negocio_id: str, desde: datetime, hasta: datetime,
+) -> set[str]:
+    """
+    Devuelve los IDs de ventas COMPLETADA en el periodo cuyos movimientos
+    tienen al menos un lote_id NULL o costo_unitario NULL.
+    Usa SQL puro por eficiencia.
+
+    Nota: una venta puede tener movimientos perfectos Y movimientos legacy.
+    Si CUALQUIERA es legacy, toda la venta queda marcada como legacy
+    (Opcion A confirmada en A.1).
+    """
+    sql = text("""
+        SELECT DISTINCT v.id
+        FROM ventas v
+        JOIN movimientos_stock m
+          ON m.referencia_id = CAST(v.numero AS TEXT)
+         AND m.almacen_id = v.almacen_id
+         AND m.tipo = 'SALIDA_VENTA'
+        WHERE v.negocio_id = :negocio_id
+          AND v.estado = 'COMPLETADA'
+          AND v.completed_at >= :desde
+          AND v.completed_at <= :hasta
+          AND (m.lote_id IS NULL OR m.costo_unitario IS NULL)
+    """)
+    rows = db.execute(sql, {
+        "negocio_id": negocio_id,
+        "desde": desde,
+        "hasta": hasta,
+    }).fetchall()
+    return {row[0] for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# Bloque de canceladas (informativo, Opcion B)
+# ---------------------------------------------------------------------------
+def _info_canceladas(
+    db: Session, negocio_id: str, desde: datetime, hasta: datetime,
+) -> dict:
+    """
+    Cuenta y suma de ventas CANCELADAS por cancelled_at en el periodo.
+    """
+    sql = text("""
+        SELECT
+            COUNT(*) AS cnt,
+            COALESCE(SUM(total), 0) AS monto
+        FROM ventas
+        WHERE negocio_id = :negocio_id
+          AND estado = 'CANCELADA'
+          AND cancelled_at >= :desde
+          AND cancelled_at <= :hasta
+    """)
+    row = db.execute(sql, {
+        "negocio_id": negocio_id,
+        "desde": desde,
+        "hasta": hasta,
+    }).fetchone()
+    return {
+        "count": row[0],
+        "monto_cancelado": _round_2(_safe(row[1])),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Endpoint principal: utilidad-periodo
+# ---------------------------------------------------------------------------
+def calcular_utilidad_periodo(
+    db: Session, negocio_id: str, desde: date, hasta: date,
+) -> dict:
+    """
+    Calcula utilidad agregada del periodo con breakdown temporal.
+
+    REGLAS (cerradas con stakeholder en A.2):
+    - Solo COMPLETADA, filtrado por completed_at
+    - Excluye ventas legacy del calculo (las cuenta aparte)
+    - Bloque informativo de canceladas (cancelled_at en periodo)
+    - Granularidad: dia si <=90 dias, mes si > 90 dias
+    - Rango max: 365 dias
+
+    Devuelve dict con estructura UtilidadPeriodoResponse.
+    """
+    _validar_rango(desde, hasta)
+    granularidad = _granularidad_para(desde, hasta)
+
+    # Convertir a datetime con bordes [00:00:00, 23:59:59.999999]
+    desde_dt = datetime.combine(desde, datetime.min.time())
+    hasta_dt = datetime.combine(hasta, datetime.max.time())
+
+    legacy_ids = _ids_ventas_legacy(db, negocio_id, desde_dt, hasta_dt)
+
+    # ---- Totales del periodo (excluyendo legacy) ----
+    # Revenue: SUM(ventas.total)
+    # Cost: SUM(|movimiento.cantidad| * movimiento.costo_unitario) por las salidas
+    #
+    # IMPORTANTE: ventas.total ya incluye el descuento aplicado.
+    # cost_real lo calculamos desde movimientos sin tocar.
+    #
+    # Filtramos legacy con NOT IN para no contaminar el cálculo.
+
+    legacy_filter_sql = ""
+    legacy_params = {}
+    if legacy_ids:
+        # Postgres acepta tuple expansion con SQLAlchemy text(), pero hay que
+        # usar parametros nominales para list.
+        legacy_list = list(legacy_ids)
+        legacy_filter_sql = "AND v.id != ALL(:legacy_ids)"
+        legacy_params["legacy_ids"] = legacy_list
+
+    # Revenue: agregamos por venta para no duplicar por joins múltiples
+    sql_revenue = text(f"""
+        SELECT
+            COUNT(*) AS ventas_count,
+            COALESCE(SUM(v.total), 0) AS revenue
+        FROM ventas v
+        WHERE v.negocio_id = :negocio_id
+          AND v.estado = 'COMPLETADA'
+          AND v.completed_at >= :desde
+          AND v.completed_at <= :hasta
+          {legacy_filter_sql}
+    """)
+    row_rev = db.execute(sql_revenue, {
+        "negocio_id": negocio_id,
+        "desde": desde_dt,
+        "hasta": hasta_dt,
+        **legacy_params,
+    }).fetchone()
+    ventas_count = row_rev[0]
+    revenue = _safe(row_rev[1])
+
+    # Cost real: SUM sobre movimientos de las ventas no-legacy
+    sql_cost = text(f"""
+        SELECT COALESCE(SUM(ABS(m.cantidad) * m.costo_unitario), 0) AS cost
+        FROM ventas v
+        JOIN movimientos_stock m
+          ON m.referencia_id = CAST(v.numero AS TEXT)
+         AND m.almacen_id = v.almacen_id
+         AND m.tipo = 'SALIDA_VENTA'
+        WHERE v.negocio_id = :negocio_id
+          AND v.estado = 'COMPLETADA'
+          AND v.completed_at >= :desde
+          AND v.completed_at <= :hasta
+          {legacy_filter_sql}
+    """)
+    row_cost = db.execute(sql_cost, {
+        "negocio_id": negocio_id,
+        "desde": desde_dt,
+        "hasta": hasta_dt,
+        **legacy_params,
+    }).fetchone()
+    cost_real = _safe(row_cost[0])
+
+    profit = revenue - cost_real
+    if revenue > ZERO:
+        margin = (profit / revenue) * HUNDRED
+    else:
+        margin = ZERO
+
+    # ---- Bloque informativo legacy ----
+    sql_legacy_info = text("""
+        SELECT
+            COUNT(*) AS cnt,
+            COALESCE(SUM(total), 0) AS rev_excluido
+        FROM ventas
+        WHERE id = ANY(:ids)
+    """)
+    if legacy_ids:
+        row_leg = db.execute(sql_legacy_info, {"ids": list(legacy_ids)}).fetchone()
+        legacy_info = {
+            "count": row_leg[0],
+            "revenue_excluido": _round_2(_safe(row_leg[1])),
+        }
+    else:
+        legacy_info = {"count": 0, "revenue_excluido": _round_2(ZERO)}
+
+    # ---- Bloque informativo canceladas ----
+    canceladas_info = _info_canceladas(db, negocio_id, desde_dt, hasta_dt)
+
+    # ---- Breakdown por periodo (dia o mes) ----
+    if granularidad == "dia":
+        trunc_expr = "DATE(v.completed_at)"
+    else:
+        trunc_expr = "DATE(DATE_TRUNC('month', v.completed_at))"
+
+    sql_buckets = text(f"""
+        SELECT
+            {trunc_expr} AS fecha,
+            COUNT(*) AS ventas_count,
+            COALESCE(SUM(v.total), 0) AS revenue,
+            COALESCE(SUM(
+                (SELECT COALESCE(SUM(ABS(m.cantidad) * m.costo_unitario), 0)
+                 FROM movimientos_stock m
+                 WHERE m.referencia_id = CAST(v.numero AS TEXT)
+                   AND m.almacen_id = v.almacen_id
+                   AND m.tipo = 'SALIDA_VENTA')
+            ), 0) AS cost_real
+        FROM ventas v
+        WHERE v.negocio_id = :negocio_id
+          AND v.estado = 'COMPLETADA'
+          AND v.completed_at >= :desde
+          AND v.completed_at <= :hasta
+          {legacy_filter_sql}
+        GROUP BY {trunc_expr}
+        ORDER BY {trunc_expr} ASC
+    """)
+    rows_buckets = db.execute(sql_buckets, {
+        "negocio_id": negocio_id,
+        "desde": desde_dt,
+        "hasta": hasta_dt,
+        **legacy_params,
+    }).fetchall()
+
+    por_periodo = []
+    for r in rows_buckets:
+        b_revenue = _safe(r[2])
+        b_cost = _safe(r[3])
+        b_profit = b_revenue - b_cost
+        b_margin = (b_profit / b_revenue) * HUNDRED if b_revenue > ZERO else ZERO
+        por_periodo.append({
+            "fecha": r[0],
+            "ventas_count": r[1],
+            "revenue": _round_2(b_revenue),
+            "cost_real": _round_2(b_cost),
+            "profit": _round_2(b_profit),
+            "margin": _round_2(b_margin),
+        })
+
+    return {
+        "desde": desde,
+        "hasta": hasta,
+        "granularidad": granularidad,
+        "ventas_count": ventas_count,
+        "revenue": _round_2(revenue),
+        "cost_real": _round_2(cost_real),
+        "profit": _round_2(profit),
+        "margin": _round_2(margin),
+        "ventas_legacy_excluidas": legacy_info,
+        "ventas_canceladas": canceladas_info,
+        "por_periodo": por_periodo,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: utilidad-por-producto
+# ---------------------------------------------------------------------------
+ORDENES_VALIDOS = {"profit", "margin", "revenue"}
+
+
+def calcular_utilidad_por_producto(
+    db: Session, negocio_id: str, desde: date, hasta: date, orden: str = "profit",
+) -> dict:
+    """
+    Calcula utilidad agregada por producto en el periodo.
+
+    REGLAS (mismas que utilidad-periodo):
+    - Solo COMPLETADA, completed_at en rango
+    - Excluye legacy
+    - Orden por profit | margin | revenue (default profit DESC)
+
+    El revenue por producto se calcula sumando los detalle_venta.subtotal
+    MENOS el descuento prorrateado correspondiente. Esto es coherente con
+    el endpoint individual y con el agregado de periodo.
+    """
+    if orden not in ORDENES_VALIDOS:
+        raise ValueError(
+            f"orden debe ser uno de: {', '.join(ORDENES_VALIDOS)}. Recibí: {orden}"
+        )
+    _validar_rango(desde, hasta)
+
+    desde_dt = datetime.combine(desde, datetime.min.time())
+    hasta_dt = datetime.combine(hasta, datetime.max.time())
+
+    legacy_ids = _ids_ventas_legacy(db, negocio_id, desde_dt, hasta_dt)
+
+    legacy_filter_sql = ""
+    legacy_params = {}
+    if legacy_ids:
+        legacy_filter_sql = "AND v.id != ALL(:legacy_ids)"
+        legacy_params["legacy_ids"] = list(legacy_ids)
+
+    # Revenue por producto: subtotal de la linea menos su descuento prorrateado.
+    # El descuento prorrateado por linea = (linea.subtotal / venta.subtotal) * venta.descuento
+    # Algebraicamente: revenue_neto_linea = linea.subtotal * (1 - venta.descuento / venta.subtotal)
+    # Que es lo mismo que: linea.subtotal * (venta.total / venta.subtotal)
+    # Esa segunda forma es más estable cuando subtotal=0 (caso defensivo).
+
+    # Cost por producto: SUM movimientos por variante en las ventas del periodo
+    # ABS(cantidad) porque salidas son negativas.
+
+    sql = text(f"""
+        WITH ventas_periodo AS (
+            SELECT v.id, v.numero, v.almacen_id, v.subtotal, v.total
+            FROM ventas v
+            WHERE v.negocio_id = :negocio_id
+              AND v.estado = 'COMPLETADA'
+              AND v.completed_at >= :desde
+              AND v.completed_at <= :hasta
+              {legacy_filter_sql.replace('v.id', 'v.id')}
+        ),
+        ventas_count_total AS (
+            SELECT COUNT(*) AS total FROM ventas_periodo
+        ),
+        revenue_por_variante AS (
+            SELECT
+                d.variante_id,
+                SUM(d.cantidad) AS qty_total,
+                COUNT(DISTINCT d.venta_id) AS ventas_count,
+                SUM(
+                    CASE
+                        WHEN vp.subtotal > 0
+                        THEN d.subtotal * (vp.total / vp.subtotal)
+                        ELSE d.subtotal
+                    END
+                ) AS revenue_neto
+            FROM detalle_ventas d
+            JOIN ventas_periodo vp ON vp.id = d.venta_id
+            GROUP BY d.variante_id
+        ),
+        cost_por_variante AS (
+            SELECT
+                m.variante_id,
+                SUM(ABS(m.cantidad) * m.costo_unitario) AS cost_total
+            FROM movimientos_stock m
+            JOIN ventas_periodo vp
+              ON m.referencia_id = CAST(vp.numero AS TEXT)
+             AND m.almacen_id = vp.almacen_id
+            WHERE m.tipo = 'SALIDA_VENTA'
+            GROUP BY m.variante_id
+        )
+        SELECT
+            r.variante_id,
+            p.nombre AS producto_nombre,
+            v.sku AS variante_sku,
+            r.qty_total,
+            r.ventas_count,
+            r.revenue_neto,
+            COALESCE(c.cost_total, 0) AS cost_total,
+            (SELECT total FROM ventas_count_total) AS total_ventas_periodo
+        FROM revenue_por_variante r
+        JOIN variantes v ON v.id = r.variante_id
+        JOIN productos p ON p.id = v.producto_id
+        LEFT JOIN cost_por_variante c ON c.variante_id = r.variante_id
+        ORDER BY r.variante_id
+    """)
+
+    rows = db.execute(sql, {
+        "negocio_id": negocio_id,
+        "desde": desde_dt,
+        "hasta": hasta_dt,
+        **legacy_params,
+    }).fetchall()
+
+    productos = []
+    revenue_total = ZERO
+    cost_total_global = ZERO
+    ventas_count_periodo = 0
+
+    for r in rows:
+        revenue_neto = _safe(r[5])
+        cost_total = _safe(r[6])
+        profit = revenue_neto - cost_total
+        margin = (profit / revenue_neto) * HUNDRED if revenue_neto > ZERO else ZERO
+
+        productos.append({
+            "variante_id": r[0],
+            "producto_nombre": r[1],
+            "variante_sku": r[2],
+            "cantidad_vendida": _safe(r[3]),
+            "ventas_count": r[4],
+            "revenue": _round_2(revenue_neto),
+            "cost_real": _round_2(cost_total),
+            "profit": _round_2(profit),
+            "margin": _round_2(margin),
+        })
+
+        revenue_total += revenue_neto
+        cost_total_global += cost_total
+        ventas_count_periodo = r[7]  # mismo en todas las filas
+
+    # Ordenar
+    if orden == "profit":
+        productos.sort(key=lambda x: x["profit"], reverse=True)
+    elif orden == "margin":
+        productos.sort(key=lambda x: x["margin"], reverse=True)
+    elif orden == "revenue":
+        productos.sort(key=lambda x: x["revenue"], reverse=True)
+
+    profit_total = revenue_total - cost_total_global
+    margin_total = (profit_total / revenue_total) * HUNDRED if revenue_total > ZERO else ZERO
+
+    # Bloque informativo legacy
+    if legacy_ids:
+        sql_leg = text("""
+            SELECT COUNT(*), COALESCE(SUM(total), 0)
+            FROM ventas WHERE id = ANY(:ids)
+        """)
+        row_leg = db.execute(sql_leg, {"ids": list(legacy_ids)}).fetchone()
+        legacy_info = {
+            "count": row_leg[0],
+            "revenue_excluido": _round_2(_safe(row_leg[1])),
+        }
+    else:
+        legacy_info = {"count": 0, "revenue_excluido": _round_2(ZERO)}
+
+    return {
+        "desde": desde,
+        "hasta": hasta,
+        "orden": orden,
+        "ventas_count": ventas_count_periodo,
+        "revenue": _round_2(revenue_total),
+        "cost_real": _round_2(cost_total_global),
+        "profit": _round_2(profit_total),
+        "margin": _round_2(margin_total),
+        "ventas_legacy_excluidas": legacy_info,
+        "productos": productos,
+    }

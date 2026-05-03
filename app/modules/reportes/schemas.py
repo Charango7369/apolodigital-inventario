@@ -139,3 +139,135 @@ class UtilidadLegacyEstimadaResponse(BaseModel):
         "Esta utilidad usa el costo congelado en la venta, no el costo real "
         "del lote consumido. Para utilidad real ver /reportes/utilidad-venta/{id}."
     )
+
+
+# ===========================================================================
+# A.2 — Schemas para reportes agregados
+# ===========================================================================
+
+from datetime import date
+
+
+# ---------------------------------------------------------------------------
+# Bloque informativo de canceladas (Opción B confirmada)
+# ---------------------------------------------------------------------------
+class VentasCanceladasInfo(BaseModel):
+    """
+    Información paralela sobre ventas canceladas en el período.
+    No suma al total, es solo informativo.
+    """
+    count: int
+    monto_cancelado: Decimal
+
+
+# ---------------------------------------------------------------------------
+# Bloque informativo de legacy excluidas (Opción A confirmada)
+# ---------------------------------------------------------------------------
+class VentasLegacyInfo(BaseModel):
+    """
+    Ventas legacy excluidas del cálculo de utilidad.
+    Tienen revenue conocido pero costo desconocido, así que se excluyen
+    para no contaminar el margen con datos incompletos.
+    """
+    count: int
+    revenue_excluido: Decimal
+
+
+# ---------------------------------------------------------------------------
+# Endpoint /reportes/utilidad-periodo
+# ---------------------------------------------------------------------------
+class UtilidadPeriodoBucket(BaseModel):
+    """
+    Un día (o un mes) del período. Contiene métricas agregadas.
+
+    Si granularidad es 'dia', fecha es la fecha exacta.
+    Si granularidad es 'mes', fecha es el primer día del mes.
+    """
+    fecha: date
+    ventas_count: int
+    revenue: Decimal
+    cost_real: Decimal
+    profit: Decimal
+    margin: Decimal
+
+
+class UtilidadPeriodoResponse(BaseModel):
+    """
+    Endpoint: GET /reportes/utilidad-periodo?desde=...&hasta=...
+
+    Reglas:
+    - Solo incluye ventas COMPLETADA filtradas por completed_at (Punto 2)
+    - Excluye ventas legacy del cálculo (Punto 5: Opción A)
+    - Bloque ventas_canceladas informativo aparte (Punto 1: Opción B)
+    - Granularidad automática: día si rango <= 90 días, mes si > 90
+    - Rango máximo: 365 días
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    desde: date
+    hasta: date
+    granularidad: str  # "dia" o "mes"
+
+    # Totales del período (solo COMPLETADAS no-legacy)
+    ventas_count: int
+    revenue: Decimal
+    cost_real: Decimal
+    profit: Decimal
+    margin: Decimal
+
+    # Información paralela
+    ventas_legacy_excluidas: VentasLegacyInfo
+    ventas_canceladas: VentasCanceladasInfo
+
+    # Breakdown temporal
+    por_periodo: list[UtilidadPeriodoBucket]
+
+
+# ---------------------------------------------------------------------------
+# Endpoint /reportes/utilidad-por-producto
+# ---------------------------------------------------------------------------
+class UtilidadProductoItem(BaseModel):
+    """
+    Un producto con sus métricas de rentabilidad en el período.
+    """
+    variante_id: str
+    producto_nombre: str
+    variante_sku: str | None
+
+    # Volumen
+    cantidad_vendida: Decimal
+    ventas_count: int  # cuántas ventas distintas incluyeron este producto
+
+    # Métricas de utilidad
+    revenue: Decimal       # subtotal aportado por este producto al período (post descuento prorrateado)
+    cost_real: Decimal
+    profit: Decimal
+    margin: Decimal
+
+
+class UtilidadPorProductoResponse(BaseModel):
+    """
+    Endpoint: GET /reportes/utilidad-por-producto?desde=...&hasta=...&orden=profit|margin|revenue
+
+    Mismas reglas de filtrado que utilidad-periodo:
+    - Solo COMPLETADAS, filtradas por completed_at
+    - Excluye legacy
+    - Orden default: profit absoluto descendente
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    desde: date
+    hasta: date
+    orden: str  # "profit", "margin" o "revenue"
+
+    # Totales del período (igual que utilidad-periodo, repetido para self-contained)
+    ventas_count: int
+    revenue: Decimal
+    cost_real: Decimal
+    profit: Decimal
+    margin: Decimal
+
+    ventas_legacy_excluidas: VentasLegacyInfo
+
+    # Lista ordenada de productos
+    productos: list[UtilidadProductoItem]
