@@ -75,6 +75,23 @@ class Categoria(Base):
     icono: Mapped[str | None] = mapped_column(String(50))
     activa: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # ── Bloque B ─────────────────────────────────────────────────────────
+    # Default heredado por productos al crearse. NO propaga si cambias.
+    # Usar POST /categorias/{id}/aplicar-default-a-productos para forzarlo.
+    controla_vencimiento_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False,
+    )
+
+    # Sets de valores válidos por atributo, ej:
+    #   {"talla": ["S","M","L","XL"], "color": ["rojo","azul"]}
+    # Si vacío {}, se permite cualquier atributo libre.
+    # Si tiene contenido, se valida en crear/editar variante.
+    # Override admin: query param ?bypass_validation=true.
+    atributos_esperados: Mapped[dict] = mapped_column(
+        JsonAttr, default=dict, nullable=False,
+    )
+    # ─────────────────────────────────────────────────────────────────────
+
     negocio: Mapped["Negocio"] = relationship(back_populates="categorias")
     productos: Mapped[list["Producto"]] = relationship(back_populates="categoria")
 

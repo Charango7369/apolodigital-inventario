@@ -16,6 +16,11 @@ from app.modules.auth.models import User
 
 from app.modules.inventario import service
 from app.modules.inventario.schemas import (
+    # Bloque B
+    GenerarVariantesRequest,
+    GenerarVariantesResponse,
+    AplicarDefaultRequest,
+    AplicarDefaultResponse,
     # Categoría
     CategoriaCreate,
     CategoriaUpdate,
@@ -358,6 +363,10 @@ def eliminar_producto(
 def crear_variante(
     producto_id: str,
     data: VarianteCreate,
+    bypass_validation: bool = Query(
+        False,
+        description="Solo admin: omitir validacion de atributos contra categoria",
+    ),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -370,8 +379,15 @@ def crear_variante(
             detail="El producto no admite variantes. Edite el producto para habilitar variantes.",
         )
 
+    # Bloque B: bypass solo admin/superadmin
+    if bypass_validation and user.rol not in ("admin", "superadmin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Solo admin puede usar bypass_validation",
+        )
+
     try:
-        return service.create_variante(db, producto, data)
+        return service.create_variante(db, producto, data, bypass_validation)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -380,14 +396,25 @@ def crear_variante(
 def actualizar_variante(
     variante_id: str,
     data: VarianteUpdate,
+    bypass_validation: bool = Query(
+        False,
+        description="Solo admin: omitir validacion de atributos contra categoria",
+    ),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     variante = service.get_variante(db, user.negocio_id, variante_id)
     if not variante:
         raise HTTPException(status_code=404, detail="Variante no encontrada")
+
+    if bypass_validation and user.rol not in ("admin", "superadmin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Solo admin puede usar bypass_validation",
+        )
+
     try:
-        return service.update_variante(db, variante, data)
+        return service.update_variante(db, variante, data, bypass_validation)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -634,4 +661,116 @@ def listar_movimientos(
         "page": page,
         "per_page": per_page,
         "pages": (total + per_page - 1) // per_page,
+    }
+
+
+# ===========================================================================
+# Bloque B — endpoint generación de matriz
+# ===========================================================================
+@router.post(
+    "/productos/{producto_id}/generar-variantes",
+    response_model=GenerarVariantesResponse,
+    status_code=201,
+)
+def generar_variantes(
+    producto_id: str,
+    data: GenerarVariantesRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Genera todas las combinaciones del producto de la matriz dada.
+
+    Body de ejemplo:
+        {
+            "atributos": {
+                "talla": ["S", "M", "L"],
+                "color": ["rojo", "azul"]
+            },
+            "precio_venta": 150.00,
+            "precio_costo": 80.00,
+            "sku_prefix": "REM-NIKE",
+            "bypass_validation": false
+        }
+
+    Genera 3 × 2 = 6 variantes con SKUs autogenerados:
+        REM-NIKE-S-ROJO, REM-NIKE-S-AZUL, REM-NIKE-M-ROJO, ...
+
+    Si una combinacion ya existe (mismo dict de atributos), se omite.
+
+    bypass_validation=true requiere rol admin o superadmin.
+    """
+    producto = service.get_producto(db, user.negocio_id, producto_id)
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    if not producto.tiene_variantes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "El producto no admite variantes. "
+                "Edite el producto y marque tiene_variantes=true primero."
+            ),
+        )
+
+    if data.bypass_validation and user.rol not in ("admin", "superadmin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Solo admin puede usar bypass_validation",
+        )
+
+    try:
+        resultado = service.generar_variantes_matriz(
+            db, producto,
+            atributos=data.atributos,
+            precio_venta=data.precio_venta,
+            precio_costo=data.precio_costo,
+            sku_prefix=data.sku_prefix,
+            bypass_validation=data.bypass_validation,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "producto_id": producto.id,
+        "creadas": resultado["creadas"],
+        "omitidas_por_duplicado": resultado["omitidas"],
+        "variantes": resultado["variantes_nuevas"],
+    }
+
+
+# ===========================================================================
+# Bloque B — endpoint aplicar default a productos existentes (admin)
+# ===========================================================================
+@router.post(
+    "/categorias/{categoria_id}/aplicar-default-a-productos",
+    response_model=AplicarDefaultResponse,
+    status_code=200,
+)
+def aplicar_default_a_productos(
+    categoria_id: str,
+    data: AplicarDefaultRequest,
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Aplica el `controla_vencimiento_default` actual de la categoria a TODOS
+    los productos activos de esa categoria. Pisar valores existentes.
+
+    Operacion explicita y destructiva. Solo admin puede ejecutarla.
+    Body debe incluir confirmar=true para evitar disparos accidentales.
+    """
+    if not data.confirmar:
+        raise HTTPException(
+            status_code=400,
+            detail="Debe enviar confirmar=true para ejecutar esta operacion",
+        )
+
+    categoria = service.get_categoria(db, user.negocio_id, categoria_id)
+    if not categoria:
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    n = service.aplicar_default_a_productos(db, user.negocio_id, categoria)
+    return {
+        "productos_afectados": n,
+        "valor_aplicado": categoria.controla_vencimiento_default,
     }

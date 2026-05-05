@@ -23,12 +23,18 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 class CategoriaCreate(BaseModel):
     nombre: str = Field(..., min_length=1, max_length=100)
     icono: str | None = Field(None, max_length=50)
+    # Bloque B: configuracion de la categoria
+    controla_vencimiento_default: bool = False
+    atributos_esperados: dict = Field(default_factory=dict)
 
 
 class CategoriaUpdate(BaseModel):
     nombre: str | None = Field(None, min_length=1, max_length=100)
     icono: str | None = None
     activa: bool | None = None
+    # Bloque B
+    controla_vencimiento_default: bool | None = None
+    atributos_esperados: dict | None = None
 
 
 class CategoriaResponse(BaseModel):
@@ -39,6 +45,9 @@ class CategoriaResponse(BaseModel):
     nombre: str
     icono: str | None
     activa: bool
+    # Bloque B
+    controla_vencimiento_default: bool
+    atributos_esperados: dict
 
 
 # ---------------------------------------------------------------------------
@@ -364,3 +373,56 @@ class PaginatedResponse(BaseModel):
     page: int
     per_page: int
     pages: int
+
+
+# ===========================================================================
+# Bloque B — endpoints nuevos
+# ===========================================================================
+
+class GenerarVariantesRequest(BaseModel):
+    """
+    Body para POST /productos/{id}/generar-variantes
+
+    Ejemplo:
+        {
+            "atributos": {
+                "talla": ["S", "M", "L"],
+                "color": ["rojo", "azul"]
+            },
+            "precio_venta": 150.00,
+            "precio_costo": 80.00,
+            "sku_prefix": "REM-NIKE"
+        }
+
+    Genera todas las combinaciones (3 × 2 = 6 variantes en el ejemplo).
+    SKU autogenerado: f"{sku_prefix}-{valor1}-{valor2}" → "REM-NIKE-S-rojo".
+    """
+    atributos: dict[str, list[str]] = Field(..., min_length=1)
+    precio_venta: Decimal = Field(..., ge=0, decimal_places=2)
+    precio_costo: Decimal | None = Field(None, ge=0, decimal_places=2)
+    sku_prefix: str | None = Field(None, max_length=50)
+    bypass_validation: bool = False  # solo admin
+
+
+class GenerarVariantesResponse(BaseModel):
+    """Resumen de la generacion."""
+    producto_id: str
+    creadas: int
+    omitidas_por_duplicado: int
+    variantes: list[VarianteResponse]
+
+
+class AplicarDefaultRequest(BaseModel):
+    """
+    Body para POST /categorias/{id}/aplicar-default-a-productos
+
+    Aplica el `controla_vencimiento_default` actual de la categoria a TODOS
+    los productos activos de esa categoria. Pisar valores existentes.
+    Solo admin puede ejecutarlo.
+    """
+    confirmar: bool = Field(..., description="Debe ser true para ejecutar")
+
+
+class AplicarDefaultResponse(BaseModel):
+    productos_afectados: int
+    valor_aplicado: bool

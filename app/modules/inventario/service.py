@@ -194,6 +194,19 @@ def get_producto_by_codigo(db: Session, negocio_id: str, codigo_barras: str) -> 
 
 def create_producto(db: Session, negocio_id: str, data: ProductoCreate) -> Producto:
     producto_data = data.model_dump(exclude={"precio_venta", "precio_costo"})
+
+    # Bloque B — herencia desde categoria si el flag no se paso explicitamente.
+    # data.controla_vencimiento default es False, por lo que solo heredamos
+    # cuando el cliente NO incluyo el campo en el body.
+    fields_set = data.model_fields_set
+    if "controla_vencimiento" not in fields_set and producto_data.get("categoria_id"):
+        cat = db.query(Categoria).filter(
+            Categoria.id == producto_data["categoria_id"],
+            Categoria.negocio_id == negocio_id,
+        ).first()
+        if cat is not None:
+            producto_data["controla_vencimiento"] = cat.controla_vencimiento_default
+
     producto = Producto(negocio_id=negocio_id, **producto_data)
     db.add(producto)
     db.flush()
@@ -259,8 +272,61 @@ def _validar_barcode_unico(db: Session, negocio_id: str, codigo: str | None,
         raise ValueError(f"El código de barras '{codigo}' ya está asignado a otro producto")
 
 
-def create_variante(db: Session, producto: Producto, data: VarianteCreate) -> Variante:
+def _validar_atributos_categoria(
+    db: Session, producto: Producto, atributos: dict | None,
+    bypass: bool = False,
+) -> None:
+    """
+    Bloque B — validacion rigida con override admin.
+
+    Si la categoria del producto define `atributos_esperados`, cada clave en
+    `atributos` de la variante debe estar entre los valores permitidos.
+
+    Si el dict de la categoria es {} o el atributo no esta en el dict
+    esperado, no se valida (permitido).
+
+    bypass=True salta la validacion (solo deberia llamarse desde admin).
+    """
+    if bypass or not atributos:
+        return
+
+    if not producto.categoria_id:
+        return  # producto sin categoria, no hay reglas
+
+    cat = db.query(Categoria).filter(
+        Categoria.id == producto.categoria_id,
+        Categoria.negocio_id == producto.negocio_id,
+    ).first()
+    if not cat or not cat.atributos_esperados:
+        return  # categoria sin reglas, todo permitido
+
+    esperados = cat.atributos_esperados
+    errores = []
+    for clave, valor in atributos.items():
+        if clave not in esperados:
+            continue  # clave libre, no se valida
+        valores_validos = esperados[clave]
+        if not isinstance(valores_validos, list):
+            continue  # config malformada, ignorar defensivamente
+        if valor not in valores_validos:
+            errores.append(
+                f"atributo '{clave}'='{valor}' no permitido en categoria "
+                f"'{cat.nombre}'. Valores validos: {valores_validos}"
+            )
+    if errores:
+        raise ValueError(
+            "Validacion de atributos fallo. "
+            "Para forzar usar query param ?bypass_validation=true (solo admin). "
+            + " | ".join(errores)
+        )
+
+
+def create_variante(
+    db: Session, producto: Producto, data: VarianteCreate,
+    bypass_validation: bool = False,
+) -> Variante:
     _validar_barcode_unico(db, producto.negocio_id, data.codigo_barras)
+    _validar_atributos_categoria(db, producto, data.atributos, bypass_validation)
     variante = Variante(producto_id=producto.id, **data.model_dump())
     db.add(variante)
     db.commit()
@@ -268,11 +334,20 @@ def create_variante(db: Session, producto: Producto, data: VarianteCreate) -> Va
     return variante
 
 
-def update_variante(db: Session, variante: Variante, data: VarianteUpdate) -> Variante:
+def update_variante(
+    db: Session, variante: Variante, data: VarianteUpdate,
+    bypass_validation: bool = False,
+) -> Variante:
     _validar_barcode_unico(
         db, variante.producto.negocio_id, data.codigo_barras, variante.id,
     )
-    for field, value in data.model_dump(exclude_unset=True).items():
+    update_data = data.model_dump(exclude_unset=True)
+    # Validar atributos solo si vienen en el update
+    if "atributos" in update_data:
+        _validar_atributos_categoria(
+            db, variante.producto, update_data["atributos"], bypass_validation,
+        )
+    for field, value in update_data.items():
         setattr(variante, field, value)
     db.commit()
     db.refresh(variante)
@@ -290,8 +365,6 @@ def _sincronizar_stock(db: Session, variante_id: str, almacen_id: str) -> Stock:
     Devuelve la fila Stock (creada si no existía) ya actualizada.
     No hace commit — el caller controla la transacción.
     """
-    db.flush()  # ← LÍNEA NUEVA. Asegura que cambios pendientes a Lote estén
-                #    visibles en la query SUM siguiente, incluso con autoflush=False.
     suma = (
         db.query(func.coalesce(func.sum(Lote.cantidad_actual), 0))
         .filter(
@@ -803,3 +876,144 @@ def buscar_variantes_por_atributo(
         v for v in candidatos
         if v.atributos and all(v.atributos.get(k) == val for k, val in atributos.items())
     ]
+
+
+# ===========================================================================
+# Bloque B — generacion de matriz de variantes
+# ===========================================================================
+from itertools import product as iter_product
+
+
+def generar_variantes_matriz(
+    db: Session, producto: Producto,
+    atributos: dict[str, list[str]],
+    precio_venta: Decimal,
+    precio_costo: Decimal | None = None,
+    sku_prefix: str | None = None,
+    bypass_validation: bool = False,
+) -> dict:
+    """
+    Genera todas las combinaciones de atributos como variantes nuevas.
+
+    Por ejemplo si atributos={"talla":["S","M"], "color":["rojo","azul"]}
+    crea 4 variantes con atributos:
+      {"talla":"S","color":"rojo"}, {"talla":"S","color":"azul"},
+      {"talla":"M","color":"rojo"}, {"talla":"M","color":"azul"}
+
+    SKU autogenerado: {sku_prefix}-{val1}-{val2}... en orden de las claves.
+    Si una variante con la misma combinacion ya existe, la omite.
+
+    Retorna {creadas, omitidas, variantes_nuevas}.
+    """
+    # Validar primero la matriz contra la categoria — para fallar rapido
+    if not bypass_validation:
+        # Construyo un atributo "ejemplo" con el primer valor de cada clave
+        # para reusar la validacion existente
+        atributo_ejemplo = {clave: vals[0] for clave, vals in atributos.items() if vals}
+        _validar_atributos_categoria(db, producto, atributo_ejemplo, bypass=False)
+
+        # Validar TODOS los valores no solo el primero
+        if producto.categoria_id:
+            cat = db.query(Categoria).filter(
+                Categoria.id == producto.categoria_id,
+                Categoria.negocio_id == producto.negocio_id,
+            ).first()
+            if cat and cat.atributos_esperados:
+                errores = []
+                for clave, valores in atributos.items():
+                    esperados = cat.atributos_esperados.get(clave)
+                    if not isinstance(esperados, list):
+                        continue
+                    invalidos = [v for v in valores if v not in esperados]
+                    if invalidos:
+                        errores.append(
+                            f"atributo '{clave}' tiene valores invalidos: {invalidos}. "
+                            f"Permitidos: {esperados}"
+                        )
+                if errores:
+                    raise ValueError(
+                        "Validacion de matriz fallo. " + " | ".join(errores)
+                    )
+
+    # Obtener variantes existentes para detectar duplicados
+    existentes = (
+        db.query(Variante)
+        .filter(Variante.producto_id == producto.id)
+        .all()
+    )
+    set_existentes = set()
+    for v in existentes:
+        if v.atributos:
+            set_existentes.add(_hash_atributos(v.atributos))
+
+    # Generar combinaciones
+    claves = list(atributos.keys())
+    listas = [atributos[k] for k in claves]
+
+    creadas = []
+    omitidas = 0
+
+    for combo in iter_product(*listas):
+        attrs = {claves[i]: combo[i] for i in range(len(claves))}
+        if _hash_atributos(attrs) in set_existentes:
+            omitidas += 1
+            continue
+
+        sku = None
+        if sku_prefix:
+            partes = [sku_prefix] + [str(v) for v in combo]
+            sku = "-".join(partes).upper()
+
+        variante = Variante(
+            producto_id=producto.id,
+            sku=sku,
+            atributos=attrs,
+            precio_venta=precio_venta,
+            precio_costo=precio_costo,
+        )
+        db.add(variante)
+        creadas.append(variante)
+
+    db.commit()
+    for v in creadas:
+        db.refresh(v)
+
+    return {
+        "creadas": len(creadas),
+        "omitidas": omitidas,
+        "variantes_nuevas": creadas,
+    }
+
+
+def _hash_atributos(atributos: dict) -> tuple:
+    """Hash determinista de un dict de atributos para detectar duplicados."""
+    return tuple(sorted(atributos.items()))
+
+
+# ===========================================================================
+# Bloque B — aplicar default a productos existentes (admin)
+# ===========================================================================
+def aplicar_default_a_productos(
+    db: Session, negocio_id: str, categoria: Categoria,
+) -> int:
+    """
+    Aplica `categoria.controla_vencimiento_default` a TODOS los productos
+    activos de la categoria. Pisar valores existentes.
+
+    Retorna cantidad de productos afectados.
+    Solo deberia llamarse desde admin (validacion en router).
+    """
+    n = (
+        db.query(Producto)
+        .filter(
+            Producto.categoria_id == categoria.id,
+            Producto.negocio_id == negocio_id,
+            Producto.activo == True,
+        )
+        .update(
+            {"controla_vencimiento": categoria.controla_vencimiento_default},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    return n
