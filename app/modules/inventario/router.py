@@ -518,7 +518,7 @@ def obtener_lote(
 @router.post("/lotes", response_model=LoteResponse, status_code=201)
 def crear_lote(
     data: LoteCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """
@@ -596,7 +596,7 @@ def obtener_stock_variante(
 def configurar_stock(
     stock_id: str,
     data: StockUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """Configura mínimos y máximos de stock"""
@@ -616,7 +616,7 @@ def configurar_stock(
 )
 def registrar_movimiento(
     data: MovimientoCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """
