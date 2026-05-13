@@ -77,7 +77,7 @@ def listar_categorias(
 @router.post("/categorias", response_model=CategoriaResponse, status_code=201)
 def crear_categoria(
     data: CategoriaCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """Crea una nueva categoría"""
@@ -100,7 +100,7 @@ def obtener_categoria(
 def actualizar_categoria(
     categoria_id: str,
     data: CategoriaUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     categoria = service.get_categoria(db, user.negocio_id, categoria_id)
@@ -136,7 +136,7 @@ def listar_proveedores(
 @router.post("/proveedores", response_model=ProveedorResponse, status_code=201)
 def crear_proveedor(
     data: ProveedorCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     return service.create_proveedor(db, user.negocio_id, data)
@@ -158,7 +158,7 @@ def obtener_proveedor(
 def actualizar_proveedor(
     proveedor_id: str,
     data: ProveedorUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     proveedor = service.get_proveedor(db, user.negocio_id, proveedor_id)
@@ -290,7 +290,7 @@ def listar_productos(
 @router.post("/productos", response_model=ProductoResponse, status_code=201)
 def crear_producto(
     data: ProductoCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """Crea un nuevo producto con su variante por defecto"""
@@ -330,7 +330,7 @@ def buscar_por_codigo(
 def actualizar_producto(
     producto_id: str,
     data: ProductoUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     producto = service.get_producto(db, user.negocio_id, producto_id)
@@ -342,7 +342,7 @@ def actualizar_producto(
 @router.delete("/productos/{producto_id}", status_code=204)
 def eliminar_producto(
     producto_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """Desactiva un producto (soft delete)"""
@@ -367,7 +367,7 @@ def crear_variante(
         False,
         description="Solo admin: omitir validacion de atributos contra categoria",
     ),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     producto = service.get_producto(db, user.negocio_id, producto_id)
@@ -400,7 +400,7 @@ def actualizar_variante(
         False,
         description="Solo admin: omitir validacion de atributos contra categoria",
     ),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     variante = service.get_variante(db, user.negocio_id, variante_id)
@@ -535,7 +535,7 @@ def crear_lote(
 def editar_lote(
     lote_id: str,
     data: LoteUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """Edita campos descriptivos del lote (no cantidades)."""
@@ -553,7 +553,7 @@ def editar_lote(
 def dar_baja_lote(
     lote_id: str,
     data: DarBajaLoteRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """
@@ -675,7 +675,7 @@ def listar_movimientos(
 def generar_variantes(
     producto_id: str,
     data: GenerarVariantesRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """
