@@ -4,12 +4,14 @@ Schemas Pydantic — módulo auth
 
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from .models import UserRole
 
 
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     nombre: str = Field(..., min_length=1, max_length=200)
+    rol: UserRole = UserRole.EMPLEADO
 
 
 class UserLogin(BaseModel):
