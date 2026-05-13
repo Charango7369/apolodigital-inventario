@@ -87,22 +87,18 @@ def register(
     
     Solo un ADMIN puede registrar usuarios, y solo en SU negocio.
     """
-    # Forzar que el nuevo usuario sea del mismo negocio que el admin
-    if user_data.negocio_id != current_user.negocio_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo puedes crear usuarios en tu propio negocio",
-        )
-    
+    # El negocio_id se toma del admin (no del payload)
+    negocio_id = current_user.negocio_id
+
     # Verificar que el email no exista en este negocio
-    existing = get_user_by_email(db, user_data.email, user_data.negocio_id)
+    existing = get_user_by_email(db, user_data.email, negocio_id)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ya existe un usuario con ese email en este negocio",
         )
-    
-    user = create_user(db, user_data)
+
+    user = create_user(db, user_data, negocio_id=negocio_id)
     return UserResponse.model_validate(user)
 
 

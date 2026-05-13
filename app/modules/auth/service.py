@@ -109,16 +109,17 @@ def get_users_by_negocio(db: Session, negocio_id: str, skip: int = 0, limit: int
     ).offset(skip).limit(limit).all()
 
 
-def create_user(db: Session, user_data: UserCreate) -> User:
+def create_user(db: Session, user_data: UserCreate, negocio_id: str) -> User:
     """
     Crea nuevo usuario.
     Asume que ya verificaste que el email no existe en ese negocio.
+    El negocio_id se pasa como parametro (viene del admin que crea el usuario).
     """
     user = User(
         email=user_data.email,
         password_hash=hash_password(user_data.password),
         nombre=user_data.nombre,
-        negocio_id=user_data.negocio_id,
+        negocio_id=negocio_id,
         rol=user_data.rol.value,
     )
     db.add(user)
