@@ -7,7 +7,9 @@ Cambios v2 (lotes):
   preservando integridad de costeo. Antes hacía un AJUSTE_POSITIVO genérico.
 """
 
-from datetime import datetime, date
+
+from datetime import datetime, time, date, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from sqlalchemy import func, and_
 from sqlalchemy.orm import Session, joinedload
@@ -26,7 +28,20 @@ from app.modules.inventario.service import (
 )
 from app.modules.inventario.schemas import MovimientoCreate
 
+ZONA_LOCAL = ZoneInfo("America/La_Paz")
 
+def obtener_limites_utc(fecha_local: date):
+    """
+    Toma un día de calendario y devuelve los milisegundos exactos
+    de inicio y fin en UTC, listos para la base de datos ingenua de SQLAlchemy.
+    """
+    inicio_local = datetime.combine(fecha_local, time.min, tzinfo=ZONA_LOCAL)
+    fin_local = datetime.combine(fecha_local, time.max, tzinfo=ZONA_LOCAL)
+    
+    inicio_utc = inicio_local.astimezone(timezone.utc).replace(tzinfo=None)
+    fin_utc = fin_local.astimezone(timezone.utc).replace(tzinfo=None)
+    
+    return inicio_utc, fin_utc
 # ---------------------------------------------------------------------------
 # Clientes
 # ---------------------------------------------------------------------------
@@ -107,9 +122,11 @@ def get_ventas(
     if estado:
         query = query.filter(Venta.estado == estado)
     if fecha_desde:
-        query = query.filter(Venta.created_at >= datetime.combine(fecha_desde, datetime.min.time()))
+        inicio_utc, _ = obtener_limites_utc(fecha_desde)
+        query = query.filter(Venta.created_at >= inicio_utc)
     if fecha_hasta:
-        query = query.filter(Venta.created_at <= datetime.combine(fecha_hasta, datetime.max.time()))
+        _, fin_utc = obtener_limites_utc(fecha_hasta)
+        query = query.filter(Venta.created_at <= fin_utc)
     if cliente_id:
         query = query.filter(Venta.cliente_id == cliente_id)
 
@@ -376,9 +393,8 @@ def cancelar_venta(
 # Reportes
 # ---------------------------------------------------------------------------
 def get_resumen_ventas_dia(db: Session, negocio_id: str, fecha: date) -> dict:
-    inicio = datetime.combine(fecha, datetime.min.time())
-    fin = datetime.combine(fecha, datetime.max.time())
-
+    inicio, fin = obtener_limites_utc(fecha)
+    
     ventas = db.query(Venta).filter(
         Venta.negocio_id == negocio_id,
         Venta.estado == EstadoVenta.COMPLETADA.value,
@@ -405,9 +421,8 @@ def get_resumen_ventas_dia(db: Session, negocio_id: str, fecha: date) -> dict:
 
 
 def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
-    inicio = datetime.combine(fecha, datetime.min.time())
-    fin = datetime.combine(fecha, datetime.max.time())
-
+    inicio, fin = obtener_limites_utc(fecha)
+    
     ventas = db.query(Venta).filter(
         Venta.negocio_id == negocio_id,
         Venta.created_at >= inicio,
