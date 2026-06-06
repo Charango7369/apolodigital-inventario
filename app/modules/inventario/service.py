@@ -730,12 +730,38 @@ def crear_movimiento(
 def _crear_movimiento_entrada(
     db: Session, data: MovimientoCreate, usuario_id: str | None,
 ) -> list[MovimientoStock]:
+    
+    # --- BYPASS DE CONTINGENCIA PWA OFFLINE ---
     if not data.lote_id:
-        raise ValueError(
-            "Las entradas requieren lote_id. "
-            "Para crear un lote nuevo usa crear_lote() en su lugar."
-        )
+        # 1. Buscamos el lote de rescate específico para esta variante y almacén
+        lote_contingencia = db.query(Lote).filter(
+            Lote.variante_id == data.variante_id,
+            Lote.almacen_id == data.almacen_id,
+            Lote.codigo_lote == "CONTINGENCIA-OFFLINE"
+        ).first()
+        
+        # 2. Si no existe, lo creamos al vuelo (con UUID en formato string)
+        if not lote_contingencia:
+            lote_contingencia = Lote(
+                id=str(uuid.uuid4()),
+                variante_id=data.variante_id,
+                almacen_id=data.almacen_id,
+                codigo_lote="CONTINGENCIA-OFFLINE",
+                cantidad_inicial=0, 
+                cantidad_actual=0,
+                costo_unitario=data.costo_unitario or 0,
+                fecha_ingreso=datetime.utcnow(),
+                activo=True,
+                notas="Autogenerado por sincronización PWA offline sin lote."
+            )
+            db.add(lote_contingencia)
+            db.flush() # Sincroniza con DB para usar el ID sin hacer commit
+            
+        # 3. Asignamos el ID al payload para que el resto del flujo funcione
+        data.lote_id = lote_contingencia.id
+    # ------------------------------------------
 
+    # El flujo original continúa sin enterarse del bypass
     lote = db.get(Lote, data.lote_id)
     if not lote or lote.variante_id != data.variante_id or lote.almacen_id != data.almacen_id:
         raise ValueError("Lote no coincide con variante/almacen del movimiento")
@@ -758,7 +784,6 @@ def _crear_movimiento_entrada(
     db.commit()
     db.refresh(movimiento)
     return [movimiento]
-
 
 def _crear_movimientos_salida(
     db: Session, data: MovimientoCreate, usuario_id: str | None,
