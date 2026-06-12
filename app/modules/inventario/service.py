@@ -180,7 +180,7 @@ def get_productos(
         
     # <-- NUEVO BLOQUE: Filtro estricto por variante_id
     if variante_id:
-        from app.modules.inventario.models import  # Asegura la importación local si no está arriba
+        from app.modules.inventario.models import Variante  # Asegura la importación local
         query = query.join(Producto.variantes).filter(Variante.id == variante_id)
 
     # El orden de las operaciones se mantiene para respetar la paginación
