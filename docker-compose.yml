@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: fastapi_app
+    # El comando aquí sobrescribe el del Dockerfile, asegurando el reload para desarrollo local
+    command: uvicorn app.main:application --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    volumes:
+      # Sincroniza tu código local con el WORKDIR de tu Dockerfile
+      - .:/code
+    ports:
+      - "8000:8000"
+
+  

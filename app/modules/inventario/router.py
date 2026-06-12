@@ -230,6 +230,9 @@ def actualizar_almacen(
 def listar_productos(
     solo_activos: bool = True,
     categoria_id: str | None = None,
+    variante_id: str | None = Query(
+        None, description="Filtrar por el ID exacto de una variante"
+    ),
     busqueda: str | None = Query(
         None, min_length=1, description="Buscar por nombre o código"
     ),
@@ -240,7 +243,14 @@ def listar_productos(
 ):
     """Lista productos con paginación y filtros"""
     productos, total = service.get_productos(
-        db, user.negocio_id, solo_activos, categoria_id, busqueda, page, per_page
+        db, 
+        user.negocio_id, 
+        solo_activos, 
+        categoria_id, 
+        busqueda, 
+        page, 
+        per_page,
+        variante_id  # <--- Agregamos este argumento a la capa de servicio
     )
 
     items = []

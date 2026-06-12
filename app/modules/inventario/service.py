@@ -160,10 +160,14 @@ def get_productos(
     db: Session, negocio_id: str, solo_activos: bool = True,
     categoria_id: str | None = None, busqueda: str | None = None,
     page: int = 1, per_page: int = 50,
+    variante_id: str | None = None,  # <-- Nuevo parámetro inyectado
 ) -> tuple[list[Producto], int]:
+    
+    # Mantenemos el joinedload para la serialización de Pydantic
     query = db.query(Producto).options(joinedload(Producto.variantes)).filter(
         Producto.negocio_id == negocio_id
     )
+    
     if solo_activos:
         query = query.filter(Producto.activo == True)
     if categoria_id:
@@ -173,10 +177,17 @@ def get_productos(
         query = query.filter(
             (Producto.nombre.ilike(term)) | (Producto.codigo_barras.ilike(term))
         )
+        
+    # <-- NUEVO BLOQUE: Filtro estricto por variante_id
+    if variante_id:
+        from app.models import Variante  # Asegura la importación local si no está arriba
+        query = query.join(Producto.variantes).filter(Variante.id == variante_id)
+
+    # El orden de las operaciones se mantiene para respetar la paginación
     total = query.count()
     productos = query.order_by(Producto.nombre).offset((page - 1) * per_page).limit(per_page).all()
+    
     return productos, total
-
 
 def get_producto(db: Session, negocio_id: str, producto_id: str) -> Producto | None:
     return db.query(Producto).options(
