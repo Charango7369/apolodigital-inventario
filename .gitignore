@@ -44,3 +44,22 @@ README.md
 migrate.sh
 
 gettoken*.sh
+
+# Backups de base de datos - nunca versionar
+*.sql
+backup_*.sql
+
+# Scripts de investigación/debug de esta sesión
+forensic_*.txt
+forensic_*.sql
+columnas.txt
+tablas.txt
+tablas_local.txt
+tablas_railway.txt
+crear_tablas.py
+infiltracion.py
+reset_admin.py
+separar_identidades.py
+seed_*.py
+test_dto.py
+

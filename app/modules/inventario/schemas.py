@@ -153,7 +153,11 @@ class ProductoCreate(BaseModel):
     controla_vencimiento: bool = False  # NUEVO
     precio_venta: Decimal | None = Field(None, ge=0)
     precio_costo: Decimal | None = Field(None, ge=0)
-
+    sku: str | None = Field(
+        None, max_length=100,
+        description="SKU de la variante única para productos sin variantes. "
+                    "Se ignora si tiene_variantes=True (el SKU se define por variante).",
+    )
 
 class ProductoUpdate(BaseModel):
     nombre: str | None = Field(None, min_length=1, max_length=200)
@@ -166,6 +170,7 @@ class ProductoUpdate(BaseModel):
     activo: bool | None = None
     precio_venta: Decimal | None = Field(None, ge=0)
     precio_costo: Decimal | None = Field(None, ge=0)
+    sku: str | None = None
 
 
 class ProductoResponse(BaseModel):

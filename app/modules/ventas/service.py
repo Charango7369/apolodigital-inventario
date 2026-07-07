@@ -11,7 +11,7 @@ Cambios v2 (lotes):
 from datetime import datetime, time, date, timezone
 from zoneinfo import ZoneInfo
 from decimal import Decimal
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.modules.ventas.models import Cliente, Venta, DetalleVenta, EstadoVenta, MetodoPago
@@ -27,6 +27,7 @@ from app.modules.inventario.service import (
     get_almacen_principal, get_or_create_stock, crear_movimiento,
 )
 from app.modules.inventario.schemas import MovimientoCreate
+
 
 ZONA_LOCAL = ZoneInfo("America/La_Paz")
 
@@ -256,6 +257,8 @@ def _completar_venta(db: Session, negocio_id: str, venta: Venta, usuario_id: str
     Una sola línea de venta puede generar N movimientos si el FEFO reparte
     entre varios lotes.
     """
+    
+
     if venta.estado != EstadoVenta.PENDIENTE.value:
         raise ValueError(
             f"Solo se pueden completar ventas pendientes. Estado actual: {venta.estado}"
@@ -271,32 +274,30 @@ def _completar_venta(db: Session, negocio_id: str, venta: Venta, usuario_id: str
             continue  # Servicios no descuentan stock
 
         # Pre-chequeo rápido contra el caché Stock (mensaje claro al usuario).
-        # La validación real (lote por lote) la hace crear_movimiento.
         stock = get_or_create_stock(db, detalle.variante_id, venta.almacen_id)
         if stock.cantidad_actual < detalle.cantidad:
             raise ValueError(
                 f"Stock insuficiente para {detalle.producto_nombre}. "
                 f"Disponible: {stock.cantidad_actual}, Solicitado: {detalle.cantidad}"
             )
+        # 1. DESCUENTO EXPLÍCITO DEL STOCK GENERAL EN LA SESIÓN
+        stock.cantidad_actual -= detalle.cantidad    
 
+        # ⬅️ AQUÍ ESTÁ LA MAGIA REPARADA
         mov_data = MovimientoCreate(
             variante_id=detalle.variante_id,
             almacen_id=venta.almacen_id,
             tipo="SALIDA_VENTA",
             cantidad=detalle.cantidad,
-            referencia_id=str(venta.numero),
+            referencia_id=str(venta.id), # EL ENLACE VITAL (UUID, no el número)
             motivo=f"Venta #{venta.numero}",
-            # lote_id=None → FEFO automático
         )
-        # crear_movimiento ahora retorna list[MovimientoStock] (FEFO puede
-        # generar múltiples). No necesitamos capturar el resultado para el
-        # flujo normal: la trazabilidad queda en movimientos_stock por
-        # referencia_id = venta.numero.
+        
         crear_movimiento(db, negocio_id, mov_data, usuario_id)
 
     venta.estado = EstadoVenta.COMPLETADA.value
-    venta.completed_at = datetime.utcnow()
-
+    # Genera un datetime consciente de su zona horaria (UTC explícito)
+    venta.completed_at = datetime.now(timezone.utc)
 
 def completar_venta(
     db: Session,
@@ -344,7 +345,7 @@ def cancelar_venta(
         # Buscar TODAS las salidas originales de esta venta.
         # Una sola venta puede haber generado N movimientos por FEFO.
         movs_originales = db.query(MovimientoStock).filter(
-            MovimientoStock.referencia_id == str(venta.numero),
+            MovimientoStock.referencia_id == str(venta.id),
             MovimientoStock.tipo == "SALIDA_VENTA",
             MovimientoStock.almacen_id == venta.almacen_id,
         ).all()
@@ -363,6 +364,10 @@ def cancelar_venta(
                 )
 
             cantidad_devolver = -mov.cantidad  # mov.cantidad es negativa
+            
+            # REVERTIR EN EL STOCK GENERAL
+            stock_general = get_or_create_stock(db, mov.variante_id, mov.almacen_id)
+            stock_general.cantidad_actual += cantidad_devolver
 
             mov_data = MovimientoCreate(
                 variante_id=mov.variante_id,
@@ -371,7 +376,7 @@ def cancelar_venta(
                 cantidad=cantidad_devolver,
                 lote_id=mov.lote_id,  # ← devolver al lote ORIGINAL
                 costo_unitario=mov.costo_unitario,  # ← preservar costo historico inmutable
-                referencia_id=str(venta.numero),
+                referencia_id=str(venta.id),
                 motivo=(
                     f"Cancelación venta #{venta.numero}"
                     + (f": {motivo}" if motivo else "")
@@ -380,7 +385,8 @@ def cancelar_venta(
             crear_movimiento(db, negocio_id, mov_data, usuario_id)
 
     venta.estado = EstadoVenta.CANCELADA.value
-    venta.cancelled_at = datetime.utcnow()
+    # Por esto (consistente con el resto del módulo):
+    venta.cancelled_at = datetime.now(timezone.utc)
     if motivo:
         venta.notas = (venta.notas or "") + f"\n[CANCELADA] {motivo}"
 
@@ -454,4 +460,71 @@ def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
         "total_transferencia": totales[MetodoPago.TRANSFERENCIA.value],
         "total_credito": totales[MetodoPago.CREDITO.value],
         "total_general": sum(totales.values())
+    }
+def obtener_utilidad_periodo(
+    db: Session,
+    negocio_id: str,
+    fecha_inicio: datetime,
+    fecha_fin: datetime
+) -> dict:
+    """
+    Agrega la utilidad de todas las ventas completadas en un rango de fechas.
+    Separa el ingreso FEFO (costeo real) del ingreso Legacy (sin costeo).
+    """
+    stmt = select(Venta.id).where(
+        Venta.negocio_id == negocio_id,
+        Venta.estado == "COMPLETADA", # O EstadoVenta.COMPLETADA.value
+        Venta.created_at >= fecha_inicio,
+        Venta.created_at <= fecha_fin
+    )
+    ventas_ids = db.execute(stmt).scalars().all()
+
+    # Contadores de Alta Precisión
+    total_revenue_fefo = Decimal("0.00")
+    total_cost_fefo = Decimal("0.00")
+    
+    total_revenue_legacy = Decimal("0.00")
+    ventas_legacy_count = 0
+    ventas_fefo_count = 0
+
+    for v_id in ventas_ids:
+        # Reutilizamos tu motor existente (asume que se llama así tu función anterior)
+        reporte_individual = obtener_reporte_utilidad_venta(db, v_id)
+        
+        if reporte_individual["legacy"]:
+            total_revenue_legacy += Decimal(str(reporte_individual["revenue"]))
+            ventas_legacy_count += 1
+        else:
+            total_revenue_fefo += Decimal(str(reporte_individual["revenue"]))
+            total_cost_fefo += Decimal(str(reporte_individual["cost_real"]))
+            ventas_fefo_count += 1
+            
+        # El Garbage Collector de Python destruirá el pesado arreglo "detalle" 
+        # en la siguiente iteración, salvando la memoria RAM.
+
+    # Matemáticas de rentabilidad blindadas contra ZeroDivisionError
+    profit_fefo = total_revenue_fefo - total_cost_fefo
+    margin_fefo = (profit_fefo / total_revenue_fefo * 100) if total_revenue_fefo > 0 else Decimal("0.00")
+
+    return {
+        "periodo": {
+            "inicio": fecha_inicio.isoformat(),
+            "fin": fecha_fin.isoformat()
+        },
+        "metricas_fefo": {
+            "ventas_analizadas": ventas_fefo_count,
+            "revenue": round(total_revenue_fefo, 2),
+            "cost_real": round(total_cost_fefo, 2),
+            "profit": round(profit_fefo, 2),
+            "margin_porcentaje": round(margin_fefo, 2)
+        },
+        "alertas_legacy": {
+            "ventas_sin_costeo": ventas_legacy_count,
+            "revenue_fantasma": round(total_revenue_legacy, 2),
+            "advertencia": "El revenue_fantasma no tiene costos asociados. No asuma el 100% como ganancia."
+        },
+        "resumen_general": {
+            "total_ventas": ventas_fefo_count + ventas_legacy_count,
+            "ingreso_bruto_caja": round(total_revenue_fefo + total_revenue_legacy, 2)
+        }
     }

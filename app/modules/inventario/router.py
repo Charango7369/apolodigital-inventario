@@ -536,9 +536,12 @@ def crear_lote(
     y sincroniza el stock agregado.
     """
     try:
-        return service.crear_lote(db, user.negocio_id, data, usuario_id=user.id)
+        #return service.crear_lote(db, user.negocio_id, data, usuario_id=user.id)
+        lote = service.crear_lote(db, user.negocio_id, data, usuario_id=user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    db.commit()  # Ver nota de atomicidad en registrar_movimiento()
+    return lote
 
 
 @router.patch("/lotes/{lote_id}", response_model=LoteResponse)
@@ -571,12 +574,15 @@ def dar_baja_lote(
     Crea un MovimientoStock tipo MERMA_VENCIMIENTO.
     """
     try:
-        return service.dar_baja_lote_vencido(
+        #return service.dar_baja_lote_vencido(
+        movimiento = service.dar_baja_lote_vencido(
             db, user.negocio_id, lote_id,
             motivo=data.motivo, usuario_id=user.id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    db.commit()  # Ver nota de atomicidad en registrar_movimiento()
+    return movimiento
 
 
 # ===========================================================================
@@ -638,9 +644,13 @@ def registrar_movimiento(
     Para crear un lote nuevo, usar POST /lotes en su lugar.
     """
     try:
-        return service.crear_movimiento(db, user.negocio_id, data, user.id)
+        #return service.crear_movimiento(db, user.negocio_id, data, user.id)
+        movimientos = service.crear_movimiento(db, user.negocio_id, data, user.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # Commit ahora vive acá: crear_movimiento() ya no comitea internamente.
+    db.commit()
+    return movimientos
 
 
 @router.get("/movimientos")

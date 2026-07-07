@@ -13,23 +13,63 @@ PRINCIPIOS:
 5. Decimal exacto en backend, sin redondeo. UI redondea para mostrar.
 """
 
-from decimal import Decimal, ROUND_HALF_UP
+# 1. Librerías Estándar
 from collections import defaultdict
+from datetime import datetime, time, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import and_
+# 2. Librerías de Terceros
+from sqlalchemy import case, select, text
 from sqlalchemy.orm import Session, joinedload
 
-from app.modules.ventas.models import Venta, DetalleVenta
-from app.modules.inventario.models import MovimientoStock, Variante, Producto
+# 3. Módulos Locales de la Aplicación
+from app.modules.inventario.models import Almacen, MovimientoStock, Producto, Stock, Variante
+from app.modules.ventas.models import DetalleVenta, Venta
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# Constantes globales de cálculo
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 TWO_PLACES = Decimal("0.01")
 
+def obtener_reporte_stock_actual(
+    db: Session, 
+    negocio_id: str, 
+    almacen_id: str | None = None, 
+    categoria_id: str | None = None
+) -> list[dict]:
+    """
+    Calcula el stock actual agrupado. 
+    Alineado estrictamente con StockBaseDTO heredado.
+    """
+    stmt = (
+        select(
+            Variante.id.label("variante_id"),
+            Producto.nombre.label("producto_nombre"),
+            Variante.sku.label("sku"),
+            Almacen.nombre.label("almacen_nombre"),
+            Stock.cantidad_actual.label("cantidad_actual"),
+            Variante.precio_costo.label("costo_unitario")  # ⬅️ CORREGIDO: precio_costo
+        )
+        .join(Variante, Stock.variante_id == Variante.id)
+        .join(Producto, Variante.producto_id == Producto.id)
+        .join(Almacen, Stock.almacen_id == Almacen.id)
+        .where(
+            Producto.negocio_id == negocio_id,
+            Stock.cantidad_actual > 0  # Solo traer lo que realmente ocupa espacio
+        )
+    )
+
+    # Filtros dinámicos
+    if almacen_id:
+        stmt = stmt.where(Stock.almacen_id == almacen_id)
+    if categoria_id:
+        stmt = stmt.where(Producto.categoria_id == categoria_id)
+
+    # Ordenamiento nativo descendente por cantidad actual
+    stmt = stmt.order_by(Stock.cantidad_actual.desc())
+    
+    resultados = db.execute(stmt).mappings().all()
+    return [dict(row) for row in resultados]
 
 def _safe(value: Decimal | None) -> Decimal:
     """Defensa contra columnas nullable. Convierte None a Decimal('0')."""
@@ -61,7 +101,7 @@ def _cargar_venta_completa(db: Session, negocio_id: str, venta_id: str) -> Venta
 
 
 def _cargar_movimientos_de_venta(
-    db: Session, venta_numero: int, almacen_id: str,
+    db: Session, venta_id: int, almacen_id: str,
 ) -> dict[str, list[MovimientoStock]]:
     """
     Trae todos los SALIDA_VENTA de la venta agrupados por variante_id.
@@ -73,7 +113,7 @@ def _cargar_movimientos_de_venta(
     movs = (
         db.query(MovimientoStock)
         .filter(
-            MovimientoStock.referencia_id == str(venta_numero),
+            MovimientoStock.referencia_id == venta_id,
             MovimientoStock.tipo == "SALIDA_VENTA",
             MovimientoStock.almacen_id == almacen_id,
         )
@@ -186,7 +226,7 @@ def calcular_utilidad_venta(
     revenue = _safe(venta.total)
 
     movs_por_variante = _cargar_movimientos_de_venta(
-        db, venta.numero, venta.almacen_id,
+        db, venta.id, venta.almacen_id,
     )
 
     var_ids = [d.variante_id for d in venta.detalles]
@@ -323,7 +363,7 @@ def calcular_utilidad_legacy_estimada(
 
     # Cargamos movimientos solo para enriquecer lotes_consumidos cuando los hay
     movs_por_variante = _cargar_movimientos_de_venta(
-        db, venta.numero, venta.almacen_id,
+        db, venta.id, venta.almacen_id,
     )
 
     var_ids = [d.variante_id for d in venta.detalles]
@@ -447,38 +487,41 @@ def _granularidad_para(desde: date, hasta: date) -> str:
 # ---------------------------------------------------------------------------
 # Identificar ventas legacy en bloque (vs llamar al endpoint individual)
 # ---------------------------------------------------------------------------
-def _ids_ventas_legacy(
-    db: Session, negocio_id: str, desde: datetime, hasta: datetime,
-) -> set[str]:
+def _ids_ventas_legacy(db: Session, negocio_id: str, desde: datetime, hasta: datetime) -> set[str]:
     """
-    Devuelve los IDs de ventas COMPLETADA en el periodo cuyos movimientos
-    tienen al menos un lote_id NULL o costo_unitario NULL.
-    Usa SQL puro por eficiencia.
-
-    Nota: una venta puede tener movimientos perfectos Y movimientos legacy.
-    Si CUALQUIERA es legacy, toda la venta queda marcada como legacy
-    (Opcion A confirmada en A.1).
+    Identifica dinámicamente IDs de ventas corruptas o antiguas (Legacy).
+    Una venta es Legacy si está COMPLETADA, contiene detalles de productos físicos,
+    pero NO generó registros de salida en la tabla de movimientos de stock.
     """
-    sql = text("""
+    # Usamos NOT EXISTS para máxima velocidad en PostgreSQL
+    # Ajusta los nombres de las tablas de detalles ('detalles_ventas') si difieren en tu esquema
+    # Usamos NOT EXISTS para máxima velocidad en PostgreSQL
+    query = text("""
         SELECT DISTINCT v.id
         FROM ventas v
-        JOIN movimientos_stock m
-          ON m.referencia_id = CAST(v.numero AS TEXT)
-         AND m.almacen_id = v.almacen_id
-         AND m.tipo = 'SALIDA_VENTA'
+        JOIN detalle_ventas dv ON dv.venta_id = v.id  -- CORRECCIÓN: detalle_ventas en lugar de detalles_ventas
+        JOIN variantes var ON var.id = dv.variante_id
+        JOIN productos p ON p.id = var.producto_id
         WHERE v.negocio_id = :negocio_id
           AND v.estado = 'COMPLETADA'
           AND v.completed_at >= :desde
           AND v.completed_at <= :hasta
-          AND (m.lote_id IS NULL OR m.costo_unitario IS NULL)
+          AND p.es_servicio = FALSE
+          AND NOT EXISTS (
+              SELECT 1 
+              FROM movimientos_stock m 
+              WHERE m.referencia_id = v.id::text
+                AND m.tipo = 'SALIDA_VENTA'
+          )
     """)
-    rows = db.execute(sql, {
+    result = db.execute(query, {
         "negocio_id": negocio_id,
         "desde": desde,
-        "hasta": hasta,
+        "hasta": hasta
     }).fetchall()
-    return {row[0] for row in rows}
 
+    # Retornamos un set de strings para que la comparación 'v.id != ALL(:legacy_ids)' funcione velozmente
+    return {str(row[0]) for row in result}
 
 # ---------------------------------------------------------------------------
 # Bloque de canceladas (informativo, Opcion B)
@@ -513,49 +556,41 @@ def _info_canceladas(
 # ---------------------------------------------------------------------------
 # Endpoint principal: utilidad-periodo
 # ---------------------------------------------------------------------------
+
+# Asegúrate de importar tu constante ZERO, HUNDRED, _safe, _round_2, etc.
+from zoneinfo import ZoneInfo
+
+ZONA_LOCAL = ZoneInfo("America/La_Paz")
+
 def calcular_utilidad_periodo(
     db: Session, negocio_id: str, desde: date, hasta: date,
 ) -> dict:
     """
     Calcula utilidad agregada del periodo con breakdown temporal.
-
-    REGLAS (cerradas con stakeholder en A.2):
-    - Solo COMPLETADA, filtrado por completed_at
-    - Excluye ventas legacy del calculo (las cuenta aparte)
-    - Bloque informativo de canceladas (cancelled_at en periodo)
-    - Granularidad: dia si <=90 dias, mes si > 90 dias
-    - Rango max: 365 dias
-
-    Devuelve dict con estructura UtilidadPeriodoResponse.
+    Optimizada con casting de UUID, corrección de zona horaria (GMT-4) y normalización DTO.
     """
     _validar_rango(desde, hasta)
     granularidad = _granularidad_para(desde, hasta)
 
-    # Convertir a datetime con bordes [00:00:00, 23:59:59.999999]
-    desde_dt = datetime.combine(desde, datetime.min.time())
-    hasta_dt = datetime.combine(hasta, datetime.max.time())
-
+    # Convertir el día calendario BOLIVIANO a sus límites UTC reales — antes esto
+    # comparaba las fechas "a lo ingenuo", como si 00:00 del día elegido ya fuera
+    # 00:00 UTC. Eso desalinea el total del período respecto del desglose diario
+    # de más abajo (que sí convierte a hora local), contando ventas de la noche
+    # anterior (hora Bolivia) como si fueran del día siguiente.
+    desde_local = datetime.combine(desde, time.min, tzinfo=ZONA_LOCAL)
+    hasta_local = datetime.combine(hasta, time.max, tzinfo=ZONA_LOCAL)
+    desde_dt = desde_local.astimezone(timezone.utc).replace(tzinfo=None)
+    hasta_dt = hasta_local.astimezone(timezone.utc).replace(tzinfo=None)
     legacy_ids = _ids_ventas_legacy(db, negocio_id, desde_dt, hasta_dt)
-
-    # ---- Totales del periodo (excluyendo legacy) ----
-    # Revenue: SUM(ventas.total)
-    # Cost: SUM(|movimiento.cantidad| * movimiento.costo_unitario) por las salidas
-    #
-    # IMPORTANTE: ventas.total ya incluye el descuento aplicado.
-    # cost_real lo calculamos desde movimientos sin tocar.
-    #
-    # Filtramos legacy con NOT IN para no contaminar el cálculo.
 
     legacy_filter_sql = ""
     legacy_params = {}
     if legacy_ids:
-        # Postgres acepta tuple expansion con SQLAlchemy text(), pero hay que
-        # usar parametros nominales para list.
         legacy_list = list(legacy_ids)
         legacy_filter_sql = "AND v.id != ALL(:legacy_ids)"
         legacy_params["legacy_ids"] = legacy_list
 
-    # Revenue: agregamos por venta para no duplicar por joins múltiples
+    # Revenue
     sql_revenue = text(f"""
         SELECT
             COUNT(*) AS ventas_count,
@@ -573,15 +608,16 @@ def calcular_utilidad_periodo(
         "hasta": hasta_dt,
         **legacy_params,
     }).fetchone()
+    
     ventas_count = row_rev[0]
     revenue = _safe(row_rev[1])
 
-    # Cost real: SUM sobre movimientos de las ventas no-legacy
+    # PARCHE 2: Cast explícito de v.id a texto (v.id::text)
     sql_cost = text(f"""
         SELECT COALESCE(SUM(ABS(m.cantidad) * m.costo_unitario), 0) AS cost
         FROM ventas v
         JOIN movimientos_stock m
-          ON m.referencia_id = CAST(v.numero AS TEXT)
+          ON m.referencia_id = v.id::text 
          AND m.almacen_id = v.almacen_id
          AND m.tipo = 'SALIDA_VENTA'
         WHERE v.negocio_id = :negocio_id
@@ -599,37 +635,39 @@ def calcular_utilidad_periodo(
     cost_real = _safe(row_cost[0])
 
     profit = revenue - cost_real
-    if revenue > ZERO:
-        margin = (profit / revenue) * HUNDRED
-    else:
-        margin = ZERO
+    margin = (profit / revenue) * HUNDRED if revenue > ZERO else ZERO
 
-    # ---- Bloque informativo legacy ----
+    # Información legacy y canceladas
     sql_legacy_info = text("""
-        SELECT
-            COUNT(*) AS cnt,
-            COALESCE(SUM(total), 0) AS rev_excluido
-        FROM ventas
-        WHERE id = ANY(:ids)
+        SELECT COUNT(*) AS cnt, COALESCE(SUM(total), 0) AS rev_excluido
+        FROM ventas WHERE id = ANY(:ids)
     """)
     if legacy_ids:
         row_leg = db.execute(sql_legacy_info, {"ids": list(legacy_ids)}).fetchone()
-        legacy_info = {
-            "count": row_leg[0],
-            "revenue_excluido": _round_2(_safe(row_leg[1])),
-        }
+        legacy_info = {"count": row_leg[0], "revenue_excluido": _round_2(_safe(row_leg[1]))}
     else:
         legacy_info = {"count": 0, "revenue_excluido": _round_2(ZERO)}
 
-    # ---- Bloque informativo canceladas ----
-    canceladas_info = _info_canceladas(db, negocio_id, desde_dt, hasta_dt)
+    # PARCHE DTO: Extracción y normalización cruda de canceladas
+    raw_canceladas = _info_canceladas(db, negocio_id, desde_dt, hasta_dt)
+    monto_anulado_bruto = raw_canceladas.get("monto_cancelado")
+    if monto_anulado_bruto is None:
+        monto_anulado_bruto = raw_canceladas.get("revenue_perdido", ZERO)
+    
+    conteo_canceladas = raw_canceladas.get("count", raw_canceladas.get("cnt", 0))
 
-    # ---- Breakdown por periodo (dia o mes) ----
+    ventas_canceladas_dto = {
+        "count": conteo_canceladas,
+        "monto_cancelado": _round_2(_safe(monto_anulado_bruto))
+    }
+
+    # PARCHE 1: Corrección de Zona Horaria directamente en SQL antes de truncar la fecha
     if granularidad == "dia":
-        trunc_expr = "DATE(v.completed_at)"
+        trunc_expr = "DATE(v.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/La_Paz')"
     else:
-        trunc_expr = "DATE(DATE_TRUNC('month', v.completed_at))"
+        trunc_expr = "DATE(DATE_TRUNC('month', v.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/La_Paz'))"
 
+    # PARCHE 3: Subconsulta casted a texto (v.id::text)
     sql_buckets = text(f"""
         SELECT
             {trunc_expr} AS fecha,
@@ -638,7 +676,7 @@ def calcular_utilidad_periodo(
             COALESCE(SUM(
                 (SELECT COALESCE(SUM(ABS(m.cantidad) * m.costo_unitario), 0)
                  FROM movimientos_stock m
-                 WHERE m.referencia_id = CAST(v.numero AS TEXT)
+                 WHERE m.referencia_id = v.id::text
                    AND m.almacen_id = v.almacen_id
                    AND m.tipo = 'SALIDA_VENTA')
             ), 0) AS cost_real
@@ -683,40 +721,33 @@ def calcular_utilidad_periodo(
         "profit": _round_2(profit),
         "margin": _round_2(margin),
         "ventas_legacy_excluidas": legacy_info,
-        "ventas_canceladas": canceladas_info,
+        "ventas_canceladas": ventas_canceladas_dto, # Bloque estrictamente normalizado
         "por_periodo": por_periodo,
     }
-
-
-# ---------------------------------------------------------------------------
-# Endpoint: utilidad-por-producto
-# ---------------------------------------------------------------------------
-ORDENES_VALIDOS = {"profit", "margin", "revenue"}
-
-
+    
 def calcular_utilidad_por_producto(
-    db: Session, negocio_id: str, desde: date, hasta: date, orden: str = "profit",
+    db: Session, negocio_id: str, desde: date, hasta: date, orden: str = "profit", limit: int = 10
 ) -> dict:
     """
     Calcula utilidad agregada por producto en el periodo.
-
-    REGLAS (mismas que utilidad-periodo):
-    - Solo COMPLETADA, completed_at en rango
-    - Excluye legacy
-    - Orden por profit | margin | revenue (default profit DESC)
-
-    El revenue por producto se calcula sumando los detalle_venta.subtotal
-    MENOS el descuento prorrateado correspondiente. Esto es coherente con
-    el endpoint individual y con el agregado de periodo.
+    Consolida las métricas de las variantes bajo el producto raíz.
     """
-    if orden not in ORDENES_VALIDOS:
+    # Validación autónoma: Sin dependencias de variables globales
+    if orden not in ("profit", "margin", "revenue"):
         raise ValueError(
-            f"orden debe ser uno de: {', '.join(ORDENES_VALIDOS)}. Recibí: {orden}"
+            f"El parámetro 'orden' debe ser uno de: profit, margin, revenue. Recibí: {orden}"
         )
     _validar_rango(desde, hasta)
 
-    desde_dt = datetime.combine(desde, datetime.min.time())
-    hasta_dt = datetime.combine(hasta, datetime.max.time())
+    # Mismo fix que calcular_utilidad_periodo: convertir el día calendario
+    # BOLIVIANO a sus límites UTC reales. El código anterior le pegaba la
+    # etiqueta UTC directamente a medianoche boliviana (.replace(tzinfo=...)
+    # no corre horas, solo cambia la etiqueta), sin correr las 4 horas de
+    # diferencia real — mismo bug que en calcular_utilidad_periodo.
+    desde_local = datetime.combine(desde, time.min, tzinfo=ZONA_LOCAL)
+    hasta_local = datetime.combine(hasta, time.max, tzinfo=ZONA_LOCAL)
+    desde_dt = desde_local.astimezone(timezone.utc).replace(tzinfo=None)
+    hasta_dt = hasta_local.astimezone(timezone.utc).replace(tzinfo=None)
 
     legacy_ids = _ids_ventas_legacy(db, negocio_id, desde_dt, hasta_dt)
 
@@ -726,15 +757,7 @@ def calcular_utilidad_por_producto(
         legacy_filter_sql = "AND v.id != ALL(:legacy_ids)"
         legacy_params["legacy_ids"] = list(legacy_ids)
 
-    # Revenue por producto: subtotal de la linea menos su descuento prorrateado.
-    # El descuento prorrateado por linea = (linea.subtotal / venta.subtotal) * venta.descuento
-    # Algebraicamente: revenue_neto_linea = linea.subtotal * (1 - venta.descuento / venta.subtotal)
-    # Que es lo mismo que: linea.subtotal * (venta.total / venta.subtotal)
-    # Esa segunda forma es más estable cuando subtotal=0 (caso defensivo).
-
-    # Cost por producto: SUM movimientos por variante en las ventas del periodo
-    # ABS(cantidad) porque salidas son negativas.
-
+    # Mantenemos tus CTEs intactas, pero reparamos la selección final
     sql = text(f"""
         WITH ventas_periodo AS (
             SELECT v.id, v.numero, v.almacen_id, v.subtotal, v.total
@@ -743,7 +766,7 @@ def calcular_utilidad_por_producto(
               AND v.estado = 'COMPLETADA'
               AND v.completed_at >= :desde
               AND v.completed_at <= :hasta
-              {legacy_filter_sql.replace('v.id', 'v.id')}
+              {legacy_filter_sql}
         ),
         ventas_count_total AS (
             SELECT COUNT(*) AS total FROM ventas_periodo
@@ -751,6 +774,7 @@ def calcular_utilidad_por_producto(
         revenue_por_variante AS (
             SELECT
                 d.variante_id,
+                MAX(d.producto_nombre) AS producto_nombre_historico,
                 SUM(d.cantidad) AS qty_total,
                 COUNT(DISTINCT d.venta_id) AS ventas_count,
                 SUM(
@@ -770,23 +794,24 @@ def calcular_utilidad_por_producto(
                 SUM(ABS(m.cantidad) * m.costo_unitario) AS cost_total
             FROM movimientos_stock m
             JOIN ventas_periodo vp
-              ON m.referencia_id = CAST(vp.numero AS TEXT)
+              ON m.referencia_id = vp.id
              AND m.almacen_id = vp.almacen_id
             WHERE m.tipo = 'SALIDA_VENTA'
             GROUP BY m.variante_id
         )
         SELECT
-            r.variante_id,
-            p.nombre AS producto_nombre,
-            v.sku AS variante_sku,
-            r.qty_total,
-            r.ventas_count,
-            r.revenue_neto,
-            COALESCE(c.cost_total, 0) AS cost_total,
-            (SELECT total FROM ventas_count_total) AS total_ventas_periodo
+            r.variante_id,                                      -- [0]
+            COALESCE(p.nombre, r.producto_nombre_historico) AS producto_nombre, -- [1]
+            v.sku AS variante_sku,                              -- [2]
+            r.qty_total,                                        -- [3]
+            r.ventas_count,                                     -- [4]
+            r.revenue_neto,                                     -- [5]
+            COALESCE(c.cost_total, 0) AS cost_total,            -- [6]
+            (SELECT total FROM ventas_count_total) AS total_ventas_periodo, -- [7]
+            p.id AS producto_id                                 -- [8] ⬅️ LA CURA AL PUNTO CIEGO 1
         FROM revenue_por_variante r
-        JOIN variantes v ON v.id = r.variante_id
-        JOIN productos p ON p.id = v.producto_id
+        LEFT JOIN variantes v ON v.id = r.variante_id
+        LEFT JOIN productos p ON p.id = v.producto_id
         LEFT JOIN cost_por_variante c ON c.variante_id = r.variante_id
         ORDER BY r.variante_id
     """)
@@ -798,67 +823,113 @@ def calcular_utilidad_por_producto(
         **legacy_params,
     }).fetchall()
 
-    productos = []
-    revenue_total = ZERO
-    cost_total_global = ZERO
-    ventas_count_periodo = 0
+    # Diccionario intermedio para consolidar variantes en el producto raíz
+    consolidado_productos = {}
 
     for r in rows:
+        # p.id está ahora de forma segura en el índice 8 de la fila
+        prod_id = str(r[8]) if r[8] else f"LGC-{r[0]}" 
+        prod_nombre = r[1]
+        cantidad_vendida = _safe(r[3])
+        v_count = int(r[4]) if r[4] else 0  # Rescate del Punto Ciego 3
         revenue_neto = _safe(r[5])
         cost_total = _safe(r[6])
-        profit = revenue_neto - cost_total
-        margin = (profit / revenue_neto) * HUNDRED if revenue_neto > ZERO else ZERO
 
-        productos.append({
-            "variante_id": r[0],
-            "producto_nombre": r[1],
-            "variante_sku": r[2],
-            "cantidad_vendida": _safe(r[3]),
-            "ventas_count": r[4],
-            "revenue": _round_2(revenue_neto),
-            "cost_real": _round_2(cost_total),
+        if prod_id not in consolidado_productos:
+            consolidado_productos[prod_id] = {
+                "producto_id": prod_id,
+                "producto_nombre": prod_nombre,
+                "cantidad_vendida": 0,
+                "ventas_count": 0,
+                "revenue": ZERO,
+                "cost_real": ZERO,
+            }
+
+        consolidado_productos[prod_id]["cantidad_vendida"] += cantidad_vendida
+        consolidado_productos[prod_id]["ventas_count"] += v_count
+        consolidado_productos[prod_id]["revenue"] += revenue_neto
+        consolidado_productos[prod_id]["cost_real"] += cost_total
+
+    # Formateo y cálculo de márgenes finales por producto unificado
+    lista_productos = []
+    for p_id, p_data in consolidado_productos.items():
+        rev = p_data["revenue"]
+        cost = p_data["cost_real"]
+        profit = rev - cost
+        margin = (profit / rev) * HUNDRED if rev > ZERO else ZERO
+
+        lista_productos.append({
+            "producto_id": p_id,
+            "producto_nombre": p_data["producto_nombre"],
+            "cantidad_vendida": int(p_data["cantidad_vendida"]),
+            "ventas_count": p_data["ventas_count"],
+            "revenue": _round_2(rev),
+            "cost_real": _round_2(cost),
             "profit": _round_2(profit),
             "margin": _round_2(margin),
         })
 
-        revenue_total += revenue_neto
-        cost_total_global += cost_total
-        ventas_count_periodo = r[7]  # mismo en todas las filas
-
-    # Ordenar
+    # Aplicamos las reglas de ordenamiento sobre la lista consolidada
     if orden == "profit":
-        productos.sort(key=lambda x: x["profit"], reverse=True)
+        lista_productos.sort(key=lambda x: x["profit"], reverse=True)
     elif orden == "margin":
-        productos.sort(key=lambda x: x["margin"], reverse=True)
+        lista_productos.sort(key=lambda x: x["margin"], reverse=True)
     elif orden == "revenue":
-        productos.sort(key=lambda x: x["revenue"], reverse=True)
+        lista_productos.sort(key=lambda x: x["revenue"], reverse=True)
 
-    profit_total = revenue_total - cost_total_global
-    margin_total = (profit_total / revenue_total) * HUNDRED if revenue_total > ZERO else ZERO
-
-    # Bloque informativo legacy
-    if legacy_ids:
-        sql_leg = text("""
-            SELECT COUNT(*), COALESCE(SUM(total), 0)
-            FROM ventas WHERE id = ANY(:ids)
-        """)
-        row_leg = db.execute(sql_leg, {"ids": list(legacy_ids)}).fetchone()
-        legacy_info = {
-            "count": row_leg[0],
-            "revenue_excluido": _round_2(_safe(row_leg[1])),
-        }
-    else:
-        legacy_info = {"count": 0, "revenue_excluido": _round_2(ZERO)}
+    # Segmentación estricta para alimentar los dos gráficos del frontend
+    top_rentables = lista_productos[:limit]
+    
+    # Las pérdidas se calculan filtrando los profits negativos y ordenando del peor al mejor
+    productos_perdida = [p for p in lista_productos if p["profit"] < ZERO]
+    top_perdidas = sorted(productos_perdida, key=lambda x: x["profit"])[:limit]
 
     return {
         "desde": desde,
         "hasta": hasta,
-        "orden": orden,
-        "ventas_count": ventas_count_periodo,
-        "revenue": _round_2(revenue_total),
-        "cost_real": _round_2(cost_total_global),
-        "profit": _round_2(profit_total),
-        "margin": _round_2(margin_total),
-        "ventas_legacy_excluidas": legacy_info,
-        "productos": productos,
+        "top_rentables": top_rentables,
+        "top_perdidas": top_perdidas
     }
+
+def obtener_reporte_alertas_stock(
+    db: Session, 
+    negocio_id: str, 
+    almacen_id: str | None = None
+) -> list[dict]:
+    """
+    Identifica inventario crítico. 
+    La lógica de criticidad se resuelve a nivel de base de datos.
+    """
+    # Expresión CASE nativa de SQL para evitar bucles for en Python
+    estado_alerta_expr = case(
+        (Stock.cantidad_actual <= 0, "AGOTADO"),
+        else_="STOCK_BAJO"
+    ).label("estado_alerta")
+
+    stmt = (
+        select(
+            Variante.id.label("variante_id"),
+            Producto.nombre.label("producto_nombre"),
+            Variante.sku.label("sku"),                  # Etiquetado para Pydantic
+            Almacen.nombre.label("almacen_nombre"),
+            Stock.cantidad_actual.label("cantidad_actual"),
+            Stock.cantidad_minima.label("cantidad_minima"),
+            estado_alerta_expr                          # Columna calculada inyectada
+        )
+        .join(Variante, Stock.variante_id == Variante.id)
+        .join(Producto, Variante.producto_id == Producto.id)
+        .join(Almacen, Stock.almacen_id == Almacen.id)
+        .where(
+            Producto.negocio_id == negocio_id,
+            Stock.cantidad_actual <= Stock.cantidad_minima
+        )
+    )
+
+    if almacen_id:
+        stmt = stmt.where(Stock.almacen_id == almacen_id)
+
+    # Ordenamos primero por los agotados, luego por orden alfabético
+    stmt = stmt.order_by(Stock.cantidad_actual.asc(), Producto.nombre.asc())
+
+    resultados = db.execute(stmt).mappings().all()
+    return [dict(row) for row in resultados]

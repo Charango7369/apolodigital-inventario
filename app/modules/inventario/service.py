@@ -10,7 +10,7 @@ Cambios v2 (lotes):
 - Toda salida selecciona lote(s) por FEFO automáticamente, salvo override manual.
 - _sincronizar_stock() es el único punto que actualiza Stock.cantidad_actual.
 """
-
+import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -204,8 +204,7 @@ def get_producto_by_codigo(db: Session, negocio_id: str, codigo_barras: str) -> 
 
 
 def create_producto(db: Session, negocio_id: str, data: ProductoCreate) -> Producto:
-    producto_data = data.model_dump(exclude={"precio_venta", "precio_costo"})
-
+    producto_data = data.model_dump(exclude={"precio_venta", "precio_costo", "sku"})
     # Bloque B — herencia desde categoria si el flag no se paso explicitamente.
     # data.controla_vencimiento default es False, por lo que solo heredamos
     # cuando el cliente NO incluyo el campo en el body.
@@ -224,6 +223,7 @@ def create_producto(db: Session, negocio_id: str, data: ProductoCreate) -> Produ
     if not data.tiene_variantes:
         variante = Variante(
             producto_id=producto.id,
+            sku=data.sku,
             precio_venta=data.precio_venta or Decimal("0"),
             precio_costo=data.precio_costo,
             atributos={},
@@ -238,15 +238,18 @@ def update_producto(db: Session, producto: Producto, data: ProductoUpdate) -> Pr
     update_data = data.model_dump(exclude_unset=True)
     precio_venta = update_data.pop("precio_venta", None)
     precio_costo = update_data.pop("precio_costo", None)
+    sku = update_data.pop("sku", None)
     for key, value in update_data.items():
         setattr(producto, key, value)
-    if (precio_venta is not None or precio_costo is not None) and not producto.tiene_variantes:
+    if (precio_venta is not None or precio_costo is not None or sku is not None) and not producto.tiene_variantes:
         if producto.variantes:
             v = producto.variantes[0]
             if precio_venta is not None:
                 v.precio_venta = precio_venta
             if precio_costo is not None:
                 v.precio_costo = precio_costo
+            if sku is not None:
+                v.sku = sku
     db.commit()
     db.refresh(producto)
     return producto
@@ -376,6 +379,12 @@ def _sincronizar_stock(db: Session, variante_id: str, almacen_id: str) -> Stock:
     Devuelve la fila Stock (creada si no existía) ya actualizada.
     No hace commit — el caller controla la transacción.
     """
+    # IMPORTANTE: la sesión tiene autoflush=False (ver app/database.py).
+    # Sin este flush explícito, la suma de abajo lee el valor de Lote
+    # ANTES del decremento/incremento recién aplicado en memoria en esta
+    # misma transacción — Stock quedaría desfasado por una operación.
+    db.flush()
+
     suma = (
         db.query(func.coalesce(func.sum(Lote.cantidad_actual), 0))
         .filter(
@@ -433,6 +442,9 @@ def _seleccionar_lotes_fefo(
             Lote.fecha_vencimiento.asc(),
             Lote.fecha_ingreso.asc(),
         )
+        .with_for_update()  # Bloquea las filas hasta el commit/rollback de
+        # esta transacción: evita que dos ventas simultáneas lean el mismo
+        # stock disponible y ambas lo descuenten. No-op en SQLite (tests).
         .all()
     )
 
@@ -572,8 +584,8 @@ def crear_lote(
     db.add(movimiento)
 
     _sincronizar_stock(db, data.variante_id, data.almacen_id)
-    db.commit()
-    db.refresh(lote)
+    #db.commit()
+    #db.refresh(lote)
     return lote
 
 
@@ -624,8 +636,8 @@ def dar_baja_lote_vencido(
     lote.activo = False
 
     _sincronizar_stock(db, lote.variante_id, lote.almacen_id)
-    db.commit()
-    db.refresh(movimiento)
+    #db.commit()
+    #db.refresh(movimiento)
     return movimiento
 
 
@@ -792,8 +804,8 @@ def _crear_movimiento_entrada(
     lote.cantidad_actual += data.cantidad
 
     _sincronizar_stock(db, data.variante_id, data.almacen_id)
-    db.commit()
-    db.refresh(movimiento)
+    #db.commit()
+    #db.refresh(movimiento)
     return [movimiento]
 
 def _crear_movimientos_salida(
@@ -833,9 +845,9 @@ def _crear_movimientos_salida(
         movimientos.append(mov)
 
     _sincronizar_stock(db, data.variante_id, data.almacen_id)
-    db.commit()
-    for mov in movimientos:
-        db.refresh(mov)
+    #db.commit()
+    #for mov in movimientos:
+    #    db.refresh(mov)
     return movimientos
 
 

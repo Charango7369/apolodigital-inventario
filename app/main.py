@@ -9,6 +9,7 @@ from app.database import check_db_connection
 import app.modules.inventario.models  # noqa: F401
 import app.modules.ventas.models  # noqa: F401  # <-- NUEVO
 
+
 settings = get_settings()
 
 
@@ -52,8 +53,7 @@ application.include_router(auth_router, prefix="/api/v1", tags=["auth"])
 application.include_router(inventario_router, prefix="/api/v1", tags=["inventario"])  # <-- NUEVO
 application.include_router(ventas_router, prefix="/api/v1", tags=["ventas"])
 application.include_router(admin_router, prefix="/api/v1", tags=["admin"])  
-application.include_router(reportes_router, prefix="/api/v1", tags=["reportes"])  # NUEVO
-
+application.include_router(reportes_router, prefix="/api/v1/reportes", tags=["reportes"]) #nuevo
 
 @application.get("/", tags=["root"])
 def root():

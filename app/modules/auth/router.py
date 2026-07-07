@@ -79,7 +79,7 @@ def login(
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register(
     user_data: UserCreate,
-    db: Session = Depends(get_db),
+    #db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin),
 ):
     """
