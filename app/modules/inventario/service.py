@@ -239,9 +239,10 @@ def update_producto(db: Session, producto: Producto, data: ProductoUpdate) -> Pr
     precio_venta = update_data.pop("precio_venta", None)
     precio_costo = update_data.pop("precio_costo", None)
     sku = update_data.pop("sku", None)
+    codigo_barras = update_data.get("codigo_barras")  # sin pop: se mantiene en Producto para la busqueda general
     for key, value in update_data.items():
         setattr(producto, key, value)
-    if (precio_venta is not None or precio_costo is not None or sku is not None) and not producto.tiene_variantes:
+    if (precio_venta is not None or precio_costo is not None or sku is not None or codigo_barras is not None) and not producto.tiene_variantes:
         if producto.variantes:
             v = producto.variantes[0]
             if precio_venta is not None:
@@ -250,6 +251,8 @@ def update_producto(db: Session, producto: Producto, data: ProductoUpdate) -> Pr
                 v.precio_costo = precio_costo
             if sku is not None:
                 v.sku = sku
+            if codigo_barras is not None:
+                v.codigo_barras = codigo_barras
     db.commit()
     db.refresh(producto)
     return producto

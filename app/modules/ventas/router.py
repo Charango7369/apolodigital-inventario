@@ -4,7 +4,7 @@ Router FastAPI — módulo ventas
 Endpoints para clientes, ventas (POS) y reportes.
 """
 
-from datetime import date
+from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -236,3 +236,4 @@ def reporte_caja(
     if fecha is None:
         fecha = date.today()
     return service.get_resumen_caja(db, user.negocio_id, fecha)
+
