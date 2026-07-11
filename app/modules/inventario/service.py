@@ -1068,3 +1068,4 @@ def aplicar_default_a_productos(
     )
     db.commit()
     return n
+
