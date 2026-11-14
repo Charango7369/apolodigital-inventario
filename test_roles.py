@@ -1,14 +1,16 @@
-import requests, getpass, sys
+import requests, getpass, sys, os
 
-API = "https://apolodigital-inventario-production.up.railway.app/api/v1"
-ADMIN_EMAIL = "edwinjrivero@yahoo.com"
+# URL base de la API (ajusta si tu backend corre en otra ruta)
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/api/v1")
+
+ADMIN_EMAIL = "admin@local.com"
 ADMIN_PASSWORD = getpass.getpass(f"Password de {ADMIN_EMAIL}: ")
 
 EMPLEADO_EMAIL = "empleada_test@apolo.lat"
 EMPLEADO_PASSWORD = "Test1234!"
 
 def login(email, password):
-    r = requests.post(f"{API}/auth/login", data={"username": email, "password": password})
+    r = requests.post(f"{API_URL}/auth/login", data={"username": email, "password": password})
     if not r.ok:
         print(f"  X Login fallo {email}: {r.status_code} {r.text}")
         sys.exit(1)
@@ -20,10 +22,14 @@ print("  OK token admin")
 
 print("2. Crear usuario empleado de prueba...")
 r = requests.post(
-    f"{API}/auth/register",
+    f"{API_URL}/auth/register",
     headers={"Authorization": f"Bearer {admin_token}"},
-    json={"email": EMPLEADO_EMAIL, "password": EMPLEADO_PASSWORD,
-          "nombre": "Empleada de Prueba", "rol": "empleado"},
+    json={
+        "email": EMPLEADO_EMAIL,
+        "password": EMPLEADO_PASSWORD,
+        "nombre": "Empleada de Prueba",
+        "rol": "empleado"
+    },
 )
 if r.status_code == 400 and "exist" in r.text.lower():
     print("  OK usuario ya existe, seguimos")
@@ -39,9 +45,14 @@ print("  OK token empleado")
 
 print("4. Empleado intenta POST /lotes...")
 r = requests.post(
-    f"{API}/lotes",
+    f"{API_URL}/lotes",
     headers={"Authorization": f"Bearer {empleado_token}"},
-    json={"variante_id": "x", "almacen_id": "x", "cantidad": 1, "costo_unitario": 10},
+    json={
+        "variante_id": "x",
+        "almacen_id": "x",
+        "cantidad": 1,
+        "costo_unitario": 10
+    },
 )
 print(f"  Status: {r.status_code}")
 if r.status_code == 403:

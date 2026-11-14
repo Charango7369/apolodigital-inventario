@@ -309,6 +309,7 @@ class StockUpdate(BaseModel):
 # Movimiento
 # ---------------------------------------------------------------------------
 TipoMovimiento = Literal[
+    "ENTRADA",
     "ENTRADA_COMPRA",
     "SALIDA_VENTA",
     "AJUSTE_POSITIVO",

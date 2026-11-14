@@ -15,7 +15,7 @@ Tablas:
 """
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -52,7 +52,7 @@ class Negocio(Base):
     telefono: Mapped[str | None] = mapped_column(String(30))
     moneda: Mapped[str] = mapped_column(String(10), default="BOB")
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     categorias: Mapped[list["Categoria"]] = relationship(back_populates="negocio", cascade="all, delete-orphan")
     proveedores: Mapped[list["Proveedor"]] = relationship(back_populates="negocio", cascade="all, delete-orphan")
@@ -164,8 +164,8 @@ class Producto(Base):
     controla_vencimiento: Mapped[bool] = mapped_column(Boolean, default=False)
 
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     negocio: Mapped["Negocio"] = relationship(back_populates="productos")
     categoria: Mapped["Categoria | None"] = relationship(back_populates="productos")
@@ -260,7 +260,7 @@ class Lote(Base):
     fecha_vencimiento: Mapped[date | None] = mapped_column(Date)
 
     # Fecha en que entró al inventario (NO confundir con fecha de fabricación)
-    fecha_ingreso: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    fecha_ingreso: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Cantidad con la que entró (no cambia)
     cantidad_inicial: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
@@ -316,7 +316,7 @@ class Stock(Base):
     cantidad_maxima: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
 
     actualizado_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
     variante: Mapped["Variante"] = relationship(back_populates="stocks")
@@ -330,6 +330,7 @@ class Stock(Base):
 # MovimientoStock — registro inmutable de cada cambio
 # ---------------------------------------------------------------------------
 TIPOS_MOVIMIENTO = (
+    "ENTRADA",               # Entrada / reingreso por devolución de venta (Fase 2.4)
     "ENTRADA_COMPRA",        # llegó mercancía del proveedor (crea lote)
     "SALIDA_VENTA",          # se vendió (consume uno o más lotes vía FEFO)
     "AJUSTE_POSITIVO",       # corrección manual al alza (crea lote)
@@ -342,7 +343,7 @@ TIPOS_MOVIMIENTO = (
     "MERMA_OTROS",           # NUEVO: baja por rotura/robo/error
 )
 
-TIPOS_ENTRADA = {"ENTRADA_COMPRA", "AJUSTE_POSITIVO", "TRANSFERENCIA_ENTRADA", "DEVOLUCION_CLIENTE"}
+TIPOS_ENTRADA = {"ENTRADA", "ENTRADA_COMPRA", "AJUSTE_POSITIVO", "TRANSFERENCIA_ENTRADA", "DEVOLUCION_CLIENTE"}
 TIPOS_SALIDA = {
     "SALIDA_VENTA", "AJUSTE_NEGATIVO", "TRANSFERENCIA_SALIDA",
     "DEVOLUCION_PROVEEDOR", "MERMA_VENCIMIENTO", "MERMA_OTROS",
@@ -370,7 +371,7 @@ class MovimientoStock(Base):
     motivo: Mapped[str | None] = mapped_column(Text)
     usuario_id: Mapped[str | None] = mapped_column(String(36))
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     variante: Mapped["Variante"] = relationship(back_populates="movimientos")
     almacen: Mapped["Almacen"] = relationship(back_populates="movimientos")

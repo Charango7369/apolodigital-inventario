@@ -1,6 +1,8 @@
 import requests, getpass, sys
 
-API = "https://apolodigital-inventario-production.up.railway.app/api/v1"
+#API = "https://apolodigital-inventario-production.up.railway.app/api/v1"
+import os
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/api/v1")
 ADMIN_EMAIL = "edwinjrivero@yahoo.com"
 EMPLEADO_EMAIL = "empleada_test@apolo.lat"
 EMPLEADO_PASSWORD = "Test1234!"

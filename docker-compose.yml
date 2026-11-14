@@ -1,17 +1,43 @@
-version: "3.9"
-
 services:
-  app:
+  apolo_inventario_app:
     build: .
-    container_name: fastapi_app
-    # El comando aquí sobrescribe el del Dockerfile, asegurando el reload para desarrollo local
+    container_name: apolo_inventario_app
     command: uvicorn app.main:application --host 0.0.0.0 --port 8000 --reload
     env_file:
       - .env
     volumes:
-      # Sincroniza tu código local con el WORKDIR de tu Dockerfile
       - .:/code
     ports:
       - "8000:8000"
+    depends_on:
+      apolo_inventario_db:
+        condition: service_healthy
+    networks:
+      - apolo_net
 
-  
+  apolo_inventario_db:
+    image: postgres:15
+    container_name: apolo_inventario_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: apolo_inventario
+    ports:
+      - "5433:5432"
+    volumes:
+      - apolo_inventario_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - apolo_net
+
+networks:
+  apolo_net:
+    driver: bridge
+
+volumes:
+  apolo_inventario_db_data:
+    external: true

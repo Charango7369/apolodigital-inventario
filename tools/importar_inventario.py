@@ -20,7 +20,9 @@ import pandas as pd
 # ============================================================================
 # CONFIG ──── EDITAR ESTO
 # ============================================================================
-API_URL = "https://apolodigital-inventario-production.up.railway.app/api/v1"
+#API_URL = "https://apolodigital-inventario-production.up.railway.app/api/v1"
+import os
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/api/v1")
 ADMIN_EMAIL = "edwinjrivero@yahoo.com"
 
 ARCHIVO = "test_import.xlsx"   # ruta al archivo del cliente

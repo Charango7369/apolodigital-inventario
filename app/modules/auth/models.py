@@ -6,7 +6,7 @@ Tabla:
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import (
@@ -42,6 +42,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("email", "negocio_id", name="uq_user_email_negocio"),
+        UniqueConstraint("negocio_id", "id", name="uq_users_negocio_id"),
         Index("ix_users_email", "email"),
         Index("ix_users_negocio_id", "negocio_id"),
     )
@@ -60,11 +61,11 @@ class User(Base):
     rol: Mapped[str] = mapped_column(String(20), default=UserRole.EMPLEADO.value)
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
     
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, 
-        default=datetime.utcnow, 
-        onupdate=datetime.utcnow
+        default=lambda: datetime.now(timezone.utc), 
+        onupdate=lambda: datetime.now(timezone.utc)
     )
     ultimo_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

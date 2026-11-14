@@ -7,7 +7,7 @@ Lógica de negocio para autenticación:
 - CRUD de usuarios
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -58,7 +58,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     - exp: expiración
     """
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -131,21 +131,16 @@ def create_user(db: Session, user_data: UserCreate, negocio_id: str) -> User:
 def authenticate_user(db: Session, email: str, password: str) -> User | None:
     """
     Autentica usuario por email y contraseña.
+    Busca candidatos activos con ese email y verifica la contraseña.
     Retorna el usuario si es válido, None si no.
     """
-    user = get_user_by_email_any_negocio(db, email)
-    if not user:
-        return None
-    if not user.activo:
-        return None
-    if not verify_password(password, user.password_hash):
-        return None
-    
-    # Actualizar último login
-    user.ultimo_login = datetime.utcnow()
-    db.commit()
-    
-    return user
+    candidates = db.query(User).filter(User.email == email, User.activo == True).all()
+    for user in candidates:
+        if verify_password(password, user.password_hash):
+            user.ultimo_login = datetime.now(timezone.utc)
+            db.commit()
+            return user
+    return None
 
 
 def update_user_password(db: Session, user: User, new_password: str) -> User:

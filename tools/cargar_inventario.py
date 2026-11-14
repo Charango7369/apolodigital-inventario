@@ -13,8 +13,9 @@ import getpass, sys
 from datetime import datetime
 import requests
 
-API_URL = "https://apolodigital-inventario-production.up.railway.app/api/v1"
-
+#API_URL = "https://apolodigital-inventario-production.up.railway.app/api/v1"
+import os
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/api/v1")
 def login():
     print("="*70)
     print("ApoloDigital - Carga rapida interactiva")
