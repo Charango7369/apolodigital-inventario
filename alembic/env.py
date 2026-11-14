@@ -9,6 +9,7 @@ from app.database import Base
 # Agrega una línea por cada módulo nuevo que crees.
 import app.modules.inventario.models as _inv_models  # noqa: F401
 import app.modules.auth.models as _auth_models  # noqa: F401
+import app.modules.ventas.models as _ventas_models  # noqa: F401
 
 config = context.config
 settings = get_settings()
