@@ -27,6 +27,10 @@ from app.modules.inventario.service import (
     get_almacen_principal, get_or_create_stock, crear_movimiento,
 )
 from app.modules.inventario.schemas import MovimientoCreate
+from app.modules.ventas.services.sale_service import SaleService
+from app.modules.ventas.services.payment_service import PaymentService
+
+crear_venta_financiera = SaleService.crear_venta_financiera
 
 
 ZONA_LOCAL = ZoneInfo("America/La_Paz")
@@ -177,16 +181,38 @@ def crear_venta(
         if not almacen:
             raise ValueError("No hay almacén principal configurado")
 
+    # H-01: Validar cliente contra tenant y estado activo para prevenir IDOR
+    cliente_nombre = data.cliente_nombre
+    if data.cliente_id:
+        cliente = db.query(Cliente).filter(
+            Cliente.id == data.cliente_id,
+            Cliente.negocio_id == negocio_id,
+            Cliente.activo == True
+        ).first()
+        if not cliente:
+            raise ValueError("Cliente no encontrado, inactivo o no pertenece a su negocio")
+        if not cliente_nombre:
+            cliente_nombre = cliente.nombre
+
+    # H-08: Preservar cliente_nit en notas si viene en el payload
+    notas = data.notas
+    if data.cliente_nit:
+        nit_tag = f"[NIT: {data.cliente_nit}]"
+        if not notas:
+            notas = nit_tag
+        elif nit_tag not in notas:
+            notas = f"{notas}\n{nit_tag}"
+
     numero = get_siguiente_numero_venta(db, negocio_id)
     venta = Venta(
         negocio_id=negocio_id,
         almacen_id=almacen.id,
         numero=numero,
         cliente_id=data.cliente_id,
-        cliente_nombre=data.cliente_nombre,
+        cliente_nombre=cliente_nombre,
         metodo_pago=data.metodo_pago,
         monto_recibido=data.monto_recibido,
-        notas=data.notas,
+        notas=notas,
         usuario_id=usuario_id,
         estado=EstadoVenta.PENDIENTE.value
     )
@@ -280,10 +306,7 @@ def _completar_venta(db: Session, negocio_id: str, venta: Venta, usuario_id: str
                 f"Stock insuficiente para {detalle.producto_nombre}. "
                 f"Disponible: {stock.cantidad_actual}, Solicitado: {detalle.cantidad}"
             )
-        # 1. DESCUENTO EXPLÍCITO DEL STOCK GENERAL EN LA SESIÓN
-        stock.cantidad_actual -= detalle.cantidad    
-
-        # ⬅️ AQUÍ ESTÁ LA MAGIA REPARADA
+        # Movimiento FEFO de salida (crear_movimiento sincroniza Stock automáticamente)
         mov_data = MovimientoCreate(
             variante_id=detalle.variante_id,
             almacen_id=venta.almacen_id,
@@ -306,7 +329,10 @@ def completar_venta(
     data: VentaCompletarRequest,
     usuario_id: str
 ) -> Venta:
-    """Completa una venta pendiente"""
+    """Completa una venta pendiente. Es naturalmente idempotente si ya fue completada."""
+    if venta.estado == EstadoVenta.COMPLETADA.value:
+        return venta
+
     if data.metodo_pago:
         venta.metodo_pago = data.metodo_pago
     if data.monto_recibido:
@@ -364,11 +390,8 @@ def cancelar_venta(
                 )
 
             cantidad_devolver = -mov.cantidad  # mov.cantidad es negativa
-            
-            # REVERTIR EN EL STOCK GENERAL
-            stock_general = get_or_create_stock(db, mov.variante_id, mov.almacen_id)
-            stock_general.cantidad_actual += cantidad_devolver
 
+            # Devolución al lote original (crear_movimiento sincroniza Stock automáticamente)
             mov_data = MovimientoCreate(
                 variante_id=mov.variante_id,
                 almacen_id=mov.almacen_id,
@@ -450,6 +473,10 @@ def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
         if v.metodo_pago in totales:
             totales[v.metodo_pago] += v.total
 
+    total_cobrado = sum(
+        monto for metodo, monto in totales.items() if metodo != MetodoPago.CREDITO.value
+    )
+
     return {
         "fecha": fecha.isoformat(),
         "ventas_completadas": len(completadas),
@@ -459,7 +486,8 @@ def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
         "total_tarjeta": totales[MetodoPago.TARJETA.value],
         "total_transferencia": totales[MetodoPago.TRANSFERENCIA.value],
         "total_credito": totales[MetodoPago.CREDITO.value],
-        "total_general": sum(totales.values())
+        "total_credito_otorgado": totales[MetodoPago.CREDITO.value],
+        "total_general": total_cobrado
     }
 def obtener_utilidad_periodo(
     db: Session,
@@ -487,16 +515,20 @@ def obtener_utilidad_periodo(
     ventas_legacy_count = 0
     ventas_fefo_count = 0
 
+    from app.modules.reportes.service import calcular_utilidad_venta
+
     for v_id in ventas_ids:
-        # Reutilizamos tu motor existente (asume que se llama así tu función anterior)
-        reporte_individual = obtener_reporte_utilidad_venta(db, v_id)
-        
+        reporte_individual = calcular_utilidad_venta(db, negocio_id, str(v_id))
+        if not reporte_individual:
+            continue
+
         if reporte_individual["legacy"]:
             total_revenue_legacy += Decimal(str(reporte_individual["revenue"]))
             ventas_legacy_count += 1
         else:
             total_revenue_fefo += Decimal(str(reporte_individual["revenue"]))
-            total_cost_fefo += Decimal(str(reporte_individual["cost_real"]))
+            if reporte_individual["cost_real"] is not None:
+                total_cost_fefo += Decimal(str(reporte_individual["cost_real"]))
             ventas_fefo_count += 1
             
         # El Garbage Collector de Python destruirá el pesado arreglo "detalle" 
