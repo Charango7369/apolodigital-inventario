@@ -14,7 +14,9 @@ from decimal import Decimal
 from sqlalchemy import func, and_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.modules.ventas.models import Cliente, Venta, DetalleVenta, EstadoVenta, MetodoPago
+from app.modules.ventas.models import (
+    Cliente, Venta, DetalleVenta, EstadoVenta, MetodoPago, PagoVenta, CuentaPorCobrar,
+)
 from app.modules.ventas.schemas import (
     ClienteCreate, ClienteUpdate,
     VentaCreate, VentaUpdate, VentaCompletarRequest,
@@ -424,12 +426,20 @@ def cancelar_venta(
 def get_resumen_ventas_dia(db: Session, negocio_id: str, fecha: date) -> dict:
     inicio, fin = obtener_limites_utc(fecha)
     
-    ventas = db.query(Venta).filter(
-        Venta.negocio_id == negocio_id,
-        Venta.estado == EstadoVenta.COMPLETADA.value,
-        Venta.created_at >= inicio,
-        Venta.created_at <= fin
-    ).all()
+    ventas = (
+        db.query(Venta)
+        .options(
+            joinedload(Venta.pagos),
+            joinedload(Venta.cuenta_cobrar),
+        )
+        .filter(
+            Venta.negocio_id == negocio_id,
+            Venta.estado == EstadoVenta.COMPLETADA.value,
+            Venta.created_at >= inicio,
+            Venta.created_at <= fin,
+        )
+        .all()
+    )
 
     total_ventas = len(ventas)
     monto_total = sum(v.total for v in ventas)
@@ -437,26 +447,43 @@ def get_resumen_ventas_dia(db: Session, negocio_id: str, fecha: date) -> dict:
 
     por_metodo = {}
     for v in ventas:
-        metodo = v.metodo_pago
-        por_metodo[metodo] = por_metodo.get(metodo, Decimal("0")) + v.total
+        if v.pagos:
+            for p in v.pagos:
+                if p.estado == "CONFIRMED":
+                    por_metodo[p.metodo_pago] = por_metodo.get(p.metodo_pago, Decimal("0")) + p.monto
+        else:
+            por_metodo[v.metodo_pago] = por_metodo.get(v.metodo_pago, Decimal("0")) + v.total
+
+        if v.cuenta_cobrar:
+            por_metodo[MetodoPago.CREDITO.value] = (
+                por_metodo.get(MetodoPago.CREDITO.value, Decimal("0")) + v.cuenta_cobrar.saldo_pendiente
+            )
 
     return {
         "fecha": fecha.isoformat(),
         "total_ventas": total_ventas,
         "monto_total": monto_total,
         "ticket_promedio": ticket_promedio,
-        "por_metodo_pago": por_metodo
+        "por_metodo_pago": por_metodo,
     }
 
 
 def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
     inicio, fin = obtener_limites_utc(fecha)
     
-    ventas = db.query(Venta).filter(
-        Venta.negocio_id == negocio_id,
-        Venta.created_at >= inicio,
-        Venta.created_at <= fin
-    ).all()
+    ventas = (
+        db.query(Venta)
+        .options(
+            joinedload(Venta.pagos),
+            joinedload(Venta.cuenta_cobrar),
+        )
+        .filter(
+            Venta.negocio_id == negocio_id,
+            Venta.created_at >= inicio,
+            Venta.created_at <= fin,
+        )
+        .all()
+    )
 
     completadas = [v for v in ventas if v.estado == EstadoVenta.COMPLETADA.value]
     canceladas = [v for v in ventas if v.estado == EstadoVenta.CANCELADA.value]
@@ -469,12 +496,30 @@ def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
         MetodoPago.CREDITO.value: Decimal("0"),
     }
 
-    for v in completadas:
-        if v.metodo_pago in totales:
-            totales[v.metodo_pago] += v.total
+    monto_total_vendido = sum(v.total for v in completadas)
 
-    total_cobrado = sum(
-        monto for metodo, monto in totales.items() if metodo != MetodoPago.CREDITO.value
+    total_credito_otorgado = Decimal("0")
+    for v in completadas:
+        if v.pagos:
+            for p in v.pagos:
+                if p.estado == "CONFIRMED" and p.metodo_pago in totales:
+                    totales[p.metodo_pago] += p.monto
+        else:
+            if v.metodo_pago in totales and v.metodo_pago != MetodoPago.CREDITO.value:
+                totales[v.metodo_pago] += v.total
+
+        if v.cuenta_cobrar:
+            totales[MetodoPago.CREDITO.value] += v.cuenta_cobrar.saldo_pendiente
+            total_credito_otorgado += v.cuenta_cobrar.monto_inicial_financiado
+        elif v.metodo_pago == MetodoPago.CREDITO.value:
+            totales[MetodoPago.CREDITO.value] += v.total
+            total_credito_otorgado += v.total
+
+    total_cobrado = (
+        totales[MetodoPago.EFECTIVO.value]
+        + totales[MetodoPago.QR.value]
+        + totales[MetodoPago.TARJETA.value]
+        + totales[MetodoPago.TRANSFERENCIA.value]
     )
 
     return {
@@ -486,8 +531,10 @@ def get_resumen_caja(db: Session, negocio_id: str, fecha: date) -> dict:
         "total_tarjeta": totales[MetodoPago.TARJETA.value],
         "total_transferencia": totales[MetodoPago.TRANSFERENCIA.value],
         "total_credito": totales[MetodoPago.CREDITO.value],
-        "total_credito_otorgado": totales[MetodoPago.CREDITO.value],
-        "total_general": total_cobrado
+        "total_credito_otorgado": total_credito_otorgado,
+        "total_cobrado": total_cobrado,
+        "total_general": total_cobrado,
+        "monto_total_vendido": monto_total_vendido,
     }
 def obtener_utilidad_periodo(
     db: Session,

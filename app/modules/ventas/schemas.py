@@ -405,6 +405,8 @@ class ResumenCaja(BaseModel):
     total_credito: Decimal
     total_general: Decimal
     total_credito_otorgado: Decimal = Field(default=Decimal("0"))
+    total_cobrado: Decimal = Field(default=Decimal("0"))
+    monto_total_vendido: Decimal = Field(default=Decimal("0"))
 
 
 # ---------------------------------------------------------------------------

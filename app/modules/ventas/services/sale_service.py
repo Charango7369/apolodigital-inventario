@@ -218,6 +218,8 @@ class SaleService:
             # Resolver método de pago general para vista previa
             if len(pagos_a_crear) > 1:
                 metodo_cabecera = MetodoPago.MIXTO.value
+            elif len(pagos_a_crear) == 1 and saldo_financiado > Decimal("0"):
+                metodo_cabecera = MetodoPago.MIXTO.value
             elif len(pagos_a_crear) == 1:
                 metodo_cabecera = pagos_a_crear[0].metodo_pago
             elif data.es_credito or saldo_financiado > Decimal("0"):
