@@ -48,6 +48,8 @@ gettoken*.sh
 # Backups de base de datos - nunca versionar
 *.sql
 backup_*.sql
+backups_railway/
+*.dump
 
 # Scripts de investigación/debug de esta sesión
 forensic_*.txt
